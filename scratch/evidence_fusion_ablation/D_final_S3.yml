@@ -1,0 +1,201 @@
+input:
+  dataset_root: D:\compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo\inputs
+  ground_truth_extension: .npy
+  key_frames_suffix: _key_frames.npy
+  manifest_file: manifest_progress.csv
+  metadata_extension: .json
+  minimum_manifest_confidence: 0.6
+  pose2d_root: D:\compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo\inputs
+  pose_2d_suffix: _coco.npy
+  pose_cache_limit: 550
+  test_set_subdir: data
+  video_extension: .mp4
+method:
+  name: dst_physics
+  options:
+    anchor_weight: 0.3
+    bone_reliability_modulation: false
+    bone_weight: 0.5
+    data_weight: 1.0
+    delta_ray_mm: 5.0
+    fusion_bone_mode: joint
+    fusion_epi_mode: sampson
+    fusion_rule: yager
+    fusion_sources:
+    - detector
+    - epipolar
+    - bone
+    fusion_unknown_trust: 0.3
+    ground_z: null
+    iterations: 80
+    lr: 1.0
+    sym_weight: 0.2
+    use_nimble_ik: false
+output:
+  overwrite: true
+  results_csv: D:\compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo\outputs\evidence_fusion_ablation\D_final_S3.csv
+pipeline:
+  bone_prior: sequence_median
+  bone_prior_min_confidence: 0.4
+  bone_prior_min_samples: 5
+  chunk_size: 5
+  dynamic_local_radius: 5
+  dynamic_transition_weight: 7.5
+  excluded_motions: []
+  excluded_subjects: []
+  fps_mode: auto
+  frames_per_pair: 30
+  max_dynamic_sync_score: 155.0
+  max_pair_candidates: 132
+  max_pairs: 5
+  minimum_joint_confidence: 0.3
+  minimum_pair_valid_ratio: 0.5
+  minimum_valid_joints: 8
+  reference_fps: 60.0
+  sequence_refinement:
+    bone_weight: 0.7
+    data_weight: 0.34
+    enabled: true
+    max_drift: 360.0
+    max_evaluations: 30
+    reprojection_weight: 0.46
+    root_weight: 0.8
+    smoothness_weight: 0.06
+    symmetry_weight: 0.12
+  subject_fps:
+    S1: auto
+    S2: auto
+    S3: auto
+  subject_gt_joint_markers:
+    S1:
+      0:
+      - PELVIS
+      1:
+      - R_Hip Joint
+      2:
+      - RKNE
+      3:
+      - RANK
+      4:
+      - L_Hip Joint
+      5:
+      - LKNE
+      6:
+      - LANK
+      7:
+      - T10
+      8:
+      - Manubrium
+      9:
+      - C7
+      10:
+      - Vertex
+      11:
+      - L_Shoulder Joint
+      12:
+      - L_Lateral Elbow
+      - L_Medial Elbow
+      13:
+      - L_Lateral Wrist
+      - L_Medial Wrist
+      14:
+      - R_Shoulder Joint
+      15:
+      - R_Lateral Elbow
+      - R_Medial Elbow
+      16:
+      - R_Lateral Wrist
+      - R_Medial Wrist
+    S2:
+      0:
+      - PELVIS
+      1:
+      - R_Hip Joint
+      2:
+      - R_Lateral Tibial Condyle
+      - R_Medial Tibial Condyle
+      3:
+      - R_Lateral Ankle
+      - R_Medial Ankle
+      4:
+      - L_Hip Joint
+      5:
+      - L_Lateral Tibial Condyle
+      - L_Medial Tibial Condyle
+      6:
+      - L_Lateral Ankle
+      - L_Medial Ankle
+      7:
+      - T8
+      8:
+      - Manubrium
+      9:
+      - C7
+      10:
+      - Vertex
+      11:
+      - L_Shoulder Joint
+      12:
+      - L_Lateral Elbow
+      - L_Medial Elbow
+      13:
+      - L_Lateral Wrist
+      - L_Medial Wrist
+      14:
+      - R_Shoulder Joint
+      15:
+      - R_Lateral Elbow
+      - R_Medial Elbow
+      16:
+      - R_Lateral Wrist
+      - R_Medial Wrist
+    S3:
+      0:
+      - PELVIS
+      1:
+      - R_Hip Joint
+      2:
+      - RKNE
+      3:
+      - RANK
+      4:
+      - L_Hip Joint
+      5:
+      - LKNE
+      6:
+      - LANK
+      7:
+      - T10
+      8:
+      - Manubrium
+      9:
+      - C7
+      10:
+      - Vertex
+      11:
+      - L_Shoulder Joint
+      12:
+      - L_Lateral Elbow
+      - L_Medial Elbow
+      13:
+      - L_Lateral Wrist
+      - L_Medial Wrist
+      14:
+      - R_Shoulder Joint
+      15:
+      - R_Lateral Elbow
+      - R_Medial Elbow
+      16:
+      - R_Lateral Wrist
+      - R_Medial Wrist
+  subject_height_mm: auto
+  subject_heights:
+    S1: 1780.0
+    S2: 1650.0
+    S3: 1732.0
+  sync_coarse_step: 7
+  sync_local_radius: 2
+  sync_max_offset: 45
+  sync_minimum_joint_confidence: 0.25
+  sync_minimum_valid_joints: 8
+  sync_samples: 5

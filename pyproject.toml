@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "athlete-pose3d-twocam"
+version = "0.1.0"
+description = "Two-camera synchronization and 3D pose benchmark for AthletePose3D"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "PyYAML",
+    "scipy",
+    "torch",
+    "tqdm",
+]
+
+[project.scripts]
+athlete-pose3d = "athlete_pose3d.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

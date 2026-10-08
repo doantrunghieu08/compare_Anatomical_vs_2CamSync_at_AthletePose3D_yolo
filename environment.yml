@@ -1,0 +1,22 @@
+name: athlete_pose3d
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy>=1.23.0
+  - scipy>=1.9.0
+  - pandas>=1.5.0
+  - pyyaml>=6.0
+  - tqdm>=4.64.0
+  - pytorch
+  - torchvision
+  - pip
+  - pip:
+    - -e .
+    # Ghi chu: Neu chay tren WSL2 / Linux, uncomment dong duoi:
+    # - nimblephysics>=0.4.0
+    # Neu chay tren Windows Native, su dung mujoco:
+    # - mujoco>=2.3.0

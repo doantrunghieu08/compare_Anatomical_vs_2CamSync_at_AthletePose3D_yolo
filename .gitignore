@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & runtimes
+.runtime/
+venv/
+.venv/
+env/
+.env
+
+# Datasets and large media files
+inputs/
+data/
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar.gz
+
+# Evaluation outputs and caches
+outputs/
+.pytest_cache/
+.ipynb_checkpoints/
+scratch/dummy_pose.npy
+scratch/dummy_meta.json
+
+# IDEs
+.idea/
+.vscode/
+*.swp
