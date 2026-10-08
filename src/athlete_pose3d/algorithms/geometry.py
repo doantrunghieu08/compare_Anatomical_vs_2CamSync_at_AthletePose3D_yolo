@@ -37,6 +37,11 @@ MALE_H36M_BONE_RATIOS = {
 }
 CLEAR_JOINTS = np.array([2, 3, 5, 6, 11, 12, 13, 14, 15, 16])
 DERIVED_JOINTS = np.array([1, 4, 7, 8, 9, 10])
+H36M_JOINT_NAMES = (
+    "Pelvis", "R_Hip", "R_Knee", "R_Ankle", "L_Hip", "L_Knee", "L_Ankle",
+    "Spine", "Thorax", "Neck", "Head", "L_Shoulder", "L_Elbow", "L_Wrist",
+    "R_Shoulder", "R_Elbow", "R_Wrist",
+)
 
 
 

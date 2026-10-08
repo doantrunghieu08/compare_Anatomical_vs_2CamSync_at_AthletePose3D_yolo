@@ -4,6 +4,7 @@ import getpass
 import math
 import os
 import platform
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,14 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ..algorithms.geometry import (
+    CLEAR_JOINTS,
+    DERIVED_JOINTS,
+    H36M_EVAL_JOINTS,
+    H36M_JOINT_NAMES,
+    procrustes_align,
+    sequence_diagnosis,
+)
 from ..settings import REPORT_HEADERS
 
 
@@ -37,6 +46,79 @@ class SystemInfo:
         )
 
 
+def _extract_confidence_and_occlusion(result):
+    """Extract per-joint stereo confidence and occlusion status for H36M joints.
+    A joint is marked as occluded if confidence <= 0.3 in at least one camera."""
+    ca = result.get("conf_a_h36m")
+    if ca is None:
+        ca = result.get("conf_a")
+    cb = result.get("conf_b_h36m")
+    if cb is None:
+        cb = result.get("conf_b")
+
+    if ca is not None and cb is not None:
+        ca = np.asarray(ca, dtype=float).flatten()
+        cb = np.asarray(cb, dtype=float).flatten()
+        if len(ca) < 17:
+            pad = np.ones(17 - len(ca))
+            ca = np.concatenate([ca, pad])
+        if len(cb) < 17:
+            pad = np.ones(17 - len(cb))
+            cb = np.concatenate([cb, pad])
+        ca = np.nan_to_num(ca[:17], nan=0.0)
+        cb = np.nan_to_num(cb[:17], nan=0.0)
+    else:
+        ca = np.ones(17, dtype=float)
+        cb = np.ones(17, dtype=float)
+
+    stereo_conf = 0.5 * (ca + cb)
+    occluded_mask = (ca <= 0.3) | (cb <= 0.3)
+    return ca, cb, stereo_conf, occluded_mask
+
+
+def _compute_frame_joint_errors(result):
+    """Compute per-joint MPJPE (root-relative) and occlusion metrics for a single frame result."""
+    recon = result.get("recon_3d")
+    gt = result.get("gt_3d")
+    ca, cb, stereo_conf, occluded_mask = _extract_confidence_and_occlusion(result)
+
+    eval_conf = stereo_conf[H36M_EVAL_JOINTS]
+    mean_conf = round(float(np.mean(eval_conf)), 3)
+    num_occl = int(np.sum(occluded_mask[H36M_EVAL_JOINTS]))
+
+    if recon is not None and gt is not None and np.isfinite(recon).all() and np.isfinite(gt).all():
+        recon = np.asarray(recon, dtype=float)
+        gt = np.asarray(gt, dtype=float)
+        p_rel = recon - recon[:1]
+        g_rel = gt - gt[:1]
+        joint_errs = np.linalg.norm(p_rel - g_rel, axis=-1)
+
+        eval_errs = joint_errs[H36M_EVAL_JOINTS]
+        eval_occl = occluded_mask[H36M_EVAL_JOINTS]
+
+        unoccl_errs = eval_errs[~eval_occl]
+        occl_errs = eval_errs[eval_occl]
+
+        mpjpe_unoccl = round(float(np.mean(unoccl_errs)), 2) if len(unoccl_errs) > 0 else float("nan")
+        mpjpe_occl = round(float(np.mean(occl_errs)), 2) if len(occl_errs) > 0 else float("nan")
+    else:
+        joint_errs = np.full(17, float("nan"))
+        mpjpe_unoccl = float("nan")
+        mpjpe_occl = float("nan")
+
+    return {
+        "mean_conf": mean_conf,
+        "mpjpe_unoccl": mpjpe_unoccl,
+        "mpjpe_occl": mpjpe_occl,
+        "num_occl": num_occl,
+        "ca": ca,
+        "cb": cb,
+        "stereo_conf": stereo_conf,
+        "occluded_mask": occluded_mask,
+        "joint_errs": joint_errs,
+    }
+
+
 def _format_single_report_row(result, system: SystemInfo, version: str, notes: str):
     all_m = result.get("all_methods", {})
     dlt_m = all_m.get("DLT (baseline)") or all_m.get("DLT (raw baseline)") or {}
@@ -58,6 +140,8 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
     pa_c = round(float(result["pa_clear"]), 2) if result.get("pa_clear") is not None and not math.isnan(float(result["pa_clear"])) else float("nan")
     pa_d = round(float(result["pa_derived"]), 2) if result.get("pa_derived") is not None and not math.isnan(float(result["pa_derived"])) else float("nan")
 
+    metrics = _compute_frame_joint_errors(result)
+
     return [
         result.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         str(result["motion"]), str(result["subject"]),
@@ -65,6 +149,10 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
         round(b_mpjpe, 2), round(b_pa, 2), round(s_mpjpe, 2), round(s_pa, 2),
         d_mpjpe, d_pa,
         pa_c, pa_d,
+        metrics["mean_conf"],
+        metrics["mpjpe_unoccl"] if not math.isnan(metrics["mpjpe_unoccl"]) else "N/A",
+        metrics["mpjpe_occl"] if not math.isnan(metrics["mpjpe_occl"]) else "N/A",
+        metrics["num_occl"],
         str(result["best_method"]),
         int(result.get("global_sync_delta", 0)),
         int(result.get("dynamic_sync_delta", 0)),
@@ -108,11 +196,23 @@ def _build_summary_row(results, system: SystemInfo, version: str):
     pa_c_mean = round(sum(pa_c_vals) / len(pa_c_vals), 2) if pa_c_vals else "N/A"
     pa_d_mean = round(sum(pa_d_vals) / len(pa_d_vals), 2) if pa_d_vals else "N/A"
 
+    all_metrics = [_compute_frame_joint_errors(r) for r in results]
+    conf_vals = [m["mean_conf"] for m in all_metrics if not math.isnan(m["mean_conf"])]
+    unoccl_vals = [m["mpjpe_unoccl"] for m in all_metrics if not math.isnan(m["mpjpe_unoccl"])]
+    occl_vals = [m["mpjpe_occl"] for m in all_metrics if not math.isnan(m["mpjpe_occl"])]
+    num_occl_vals = [m["num_occl"] for m in all_metrics]
+
+    conf_mean = round(sum(conf_vals) / len(conf_vals), 3) if conf_vals else "N/A"
+    unoccl_mean = round(sum(unoccl_vals) / len(unoccl_vals), 2) if unoccl_vals else "N/A"
+    occl_mean = round(sum(occl_vals) / len(occl_vals), 2) if occl_vals else "N/A"
+    num_occl_mean = round(sum(num_occl_vals) / len(num_occl_vals), 1) if num_occl_vals else 0
+
     return [
         "Summary_Mean", "ALL", "ALL", "-", "-", n,
         b_m_str, b_p_str, round(s_m, 2), round(s_p, 2),
         d_m_str, d_p_str,
         pa_c_mean, pa_d_mean,
+        conf_mean, unoccl_mean, occl_mean, num_occl_mean,
         "AVERAGE", 0, 0,
         system.python_version, system.os_type, system.os_version,
         system.compute_device, str(system.cpu_cores), system.user,
@@ -120,8 +220,114 @@ def _build_summary_row(results, system: SystemInfo, version: str):
     ]
 
 
+def _build_per_joint_analysis(results: list[dict]) -> pd.DataFrame:
+    """Build detailed per-joint reliability, occlusion, and 3D error statistics across all frames."""
+    n_joints = len(H36M_JOINT_NAMES)
+
+    # Per-joint accumulators
+    conf_a_acc = [[] for _ in range(n_joints)]
+    conf_b_acc = [[] for _ in range(n_joints)]
+    conf_stereo_acc = [[] for _ in range(n_joints)]
+    occluded_acc = [[] for _ in range(n_joints)]
+
+    method_err_acc = [[] for _ in range(n_joints)]
+    method_pa_err_acc = [[] for _ in range(n_joints)]
+    dlt_err_acc = [[] for _ in range(n_joints)]
+
+    for r in results:
+        ca, cb, stereo_conf, occl_mask = _extract_confidence_and_occlusion(r)
+        for j in range(n_joints):
+            conf_a_acc[j].append(float(ca[j]))
+            conf_b_acc[j].append(float(cb[j]))
+            conf_stereo_acc[j].append(float(stereo_conf[j]))
+            occluded_acc[j].append(bool(occl_mask[j]))
+
+        recon = r.get("recon_3d")
+        gt = r.get("gt_3d")
+        if recon is not None and gt is not None and np.isfinite(recon).all() and np.isfinite(gt).all():
+            recon = np.asarray(recon, dtype=float)
+            gt = np.asarray(gt, dtype=float)
+            p_rel = recon - recon[:1]
+            g_rel = gt - gt[:1]
+            errs = np.linalg.norm(p_rel - g_rel, axis=-1)
+
+            aligned = procrustes_align(recon, gt, mask=H36M_EVAL_JOINTS)
+            pa_errs = np.linalg.norm(aligned - gt, axis=-1)
+
+            for j in range(n_joints):
+                method_err_acc[j].append(float(errs[j]))
+                method_pa_err_acc[j].append(float(pa_errs[j]))
+
+        # DLT baseline errors
+        all_m = r.get("all_methods", {})
+        dlt_m = all_m.get("DLT (baseline)") or all_m.get("DLT (raw baseline)")
+        if dlt_m and "recon_3d" in dlt_m and dlt_m["recon_3d"] is not None:
+            dlt_recon = np.asarray(dlt_m["recon_3d"], dtype=float)
+            if np.isfinite(dlt_recon).all() and gt is not None and np.isfinite(gt).all():
+                d_rel = dlt_recon - dlt_recon[:1]
+                g_rel = gt - gt[:1]
+                d_errs = np.linalg.norm(d_rel - g_rel, axis=-1)
+                for j in range(n_joints):
+                    dlt_err_acc[j].append(float(d_errs[j]))
+
+    rows = []
+    for j in range(n_joints):
+        name = H36M_JOINT_NAMES[j]
+        if j == 0:
+            category = "Root"
+        elif j in CLEAR_JOINTS:
+            category = "Clear"
+        else:
+            category = "Derived"
+
+        ca_m = np.mean(conf_a_acc[j]) if conf_a_acc[j] else float("nan")
+        cb_m = np.mean(conf_b_acc[j]) if conf_b_acc[j] else float("nan")
+        cs_m = np.mean(conf_stereo_acc[j]) if conf_stereo_acc[j] else float("nan")
+        occl_rate = np.mean(occluded_acc[j]) * 100.0 if occluded_acc[j] else 0.0
+
+        m_err = method_err_acc[j]
+        m_pa_err = method_pa_err_acc[j]
+        d_err = dlt_err_acc[j]
+        occ = occluded_acc[j]
+
+        m_mean = np.mean(m_err) if m_err else float("nan")
+        m_pa_mean = np.mean(m_pa_err) if m_pa_err else float("nan")
+        d_mean = np.mean(d_err) if d_err else float("nan")
+
+        unoccl_errs = [e for e, o in zip(m_err, occ) if not o]
+        occl_errs = [e for e, o in zip(m_err, occ) if o]
+
+        unoccl_mean = np.mean(unoccl_errs) if unoccl_errs else float("nan")
+        occl_mean = np.mean(occl_errs) if occl_errs else float("nan")
+
+        delta_pct = (
+            round((d_mean - m_mean) / d_mean * 100.0, 2)
+            if not math.isnan(d_mean) and abs(d_mean) > 1e-9 and not math.isnan(m_mean)
+            else float("nan")
+        )
+
+        rows.append({
+            "Joint_ID": j,
+            "Joint_Name": name,
+            "Group": category,
+            "Conf_CamA": round(ca_m, 3),
+            "Conf_CamB": round(cb_m, 3),
+            "Conf_Stereo": round(cs_m, 3),
+            "Occlusion_Rate_pct": round(occl_rate, 1),
+            "DLT_MPJPE_mm": round(d_mean, 2) if not math.isnan(d_mean) else "N/A",
+            "Method_MPJPE_mm": round(m_mean, 2) if not math.isnan(m_mean) else "N/A",
+            "Method_PA_MPJPE_mm": round(m_pa_mean, 2) if not math.isnan(m_pa_mean) else "N/A",
+            "MPJPE_Unoccluded_mm": round(unoccl_mean, 2) if not math.isnan(unoccl_mean) else "N/A",
+            "MPJPE_Occluded_mm": round(occl_mean, 2) if not math.isnan(occl_mean) else "N/A",
+            "Delta_vs_DLT_pct": delta_pct if not math.isnan(delta_pct) else "N/A",
+        })
+
+    df = pd.DataFrame(rows)
+    return df
+
+
 class CsvResultReporter:
-    """Append benchmark rows to a local CSV."""
+    """Append benchmark rows to a local CSV with per-joint and occlusion summary."""
 
     def __init__(self, output_csv: str | Path, version="local", notes=""):
         self.output_csv = Path(output_csv)
@@ -140,13 +346,18 @@ class CsvResultReporter:
 
     def finish(self):
         summary = _build_summary_row(self._all_results, self.system, self.version)
+        df_per_joint = None
+        if self._all_results:
+            df_per_joint = _build_per_joint_analysis(self._all_results)
+            per_joint_path = self.output_csv.parent / f"{self.output_csv.stem}_per_joint_summary.csv"
+            df_per_joint.to_csv(per_joint_path, index=False)
+            print(f"Saved per-joint detailed summary to {per_joint_path}")
+
         if summary:
             self._append([summary])
-            self._print_summary(summary)
-        # ponytail: compute sequence-level rotation & scale diagnosis per camera pair
-        from collections import defaultdict
-        from ..algorithms.geometry import sequence_diagnosis
+            self._print_summary(summary, df_per_joint)
 
+        # Sequence-level rotation & scale diagnosis per camera pair
         pair_groups = defaultdict(list)
         for r in self._all_results:
             if (
@@ -179,21 +390,40 @@ class CsvResultReporter:
                 print(f"  MPJPE-SeqSim:        {mean_sim:.2f} mm (MPJPE after rigid rotation + scale alignment)")
         self._append([["End"] * len(REPORT_HEADERS)])
 
-    def _print_summary(self, s):
+    def _print_summary(self, s, df_per_joint: pd.DataFrame | None = None):
         def _fmt(v, sign=False):
             if isinstance(v, str):
                 return v
             return f"{v:+.2f}" if sign else f"{v:.2f}"
 
-        print("\n" + "=" * 52)
+        print("\n" + "=" * 60)
         print(f"BENCHMARK SUMMARY (N = {s[5]} frames)")
         print(f"Baseline DLT MPJPE:    {_fmt(s[6])} mm | PA: {_fmt(s[7])} mm")
         print(f"Selected Method MPJPE: {_fmt(s[8])} mm | PA: {_fmt(s[9])} mm")
         print(f"Delta (Base - New):    {_fmt(s[10], sign=True)} % | PA: {_fmt(s[11], sign=True)} %")
         if s[12] != "N/A" and s[13] != "N/A":
             print(f"Joint Groups:          PA-Clear: {s[12]} mm | PA-Derived: {s[13]} mm")
-        print("=" * 52 + "\n")
+        print(f"Joint Reliability:     Mean Conf: {s[14]} | Occluded Joints/Frame: {s[17]}")
+        print(f"Occlusion Breakdown:   Unoccluded MPJPE: {s[15]} mm | Occluded MPJPE: {s[16]} mm")
+        print("=" * 60)
 
+        if df_per_joint is not None and not df_per_joint.empty:
+            print("\n" + "-" * 98)
+            print(f"{'ID':>2} | {'Joint Name':<12} | {'Group':<7} | {'Conf':>5} | {'Occl%':>6} | {'DLT(mm)':>8} | {'Method(mm)':>10} | {'PA(mm)':>8} | {'Unoccl(mm)':>10} | {'Occl(mm)':>9}")
+            print("-" * 98)
+            for _, r in df_per_joint.iterrows():
+                jid = r["Joint_ID"]
+                name = r["Joint_Name"]
+                grp = r["Group"]
+                conf = f"{r['Conf_Stereo']:.3f}" if isinstance(r['Conf_Stereo'], (int, float)) else str(r['Conf_Stereo'])
+                occl_pct = f"{r['Occlusion_Rate_pct']:.1f}%" if isinstance(r['Occlusion_Rate_pct'], (int, float)) else str(r['Occlusion_Rate_pct'])
+                dlt = f"{r['DLT_MPJPE_mm']}"
+                meth = f"{r['Method_MPJPE_mm']}"
+                pa = f"{r['Method_PA_MPJPE_mm']}"
+                unoccl = f"{r['MPJPE_Unoccluded_mm']}"
+                occl = f"{r['MPJPE_Occluded_mm']}"
+                print(f"{jid:>2} | {name:<12} | {grp:<7} | {conf:>5} | {occl_pct:>6} | {dlt:>8} | {meth:>10} | {pa:>8} | {unoccl:>10} | {occl:>9}")
+            print("-" * 98 + "\n")
 
     def _append(self, rows):
         exists = self.output_csv.exists()
@@ -203,3 +433,4 @@ class CsvResultReporter:
             header=not exists,
             index=False,
         )
+
