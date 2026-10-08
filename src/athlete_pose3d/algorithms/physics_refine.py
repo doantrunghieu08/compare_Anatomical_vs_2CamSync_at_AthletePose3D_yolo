@@ -20,8 +20,12 @@ try:
 except ImportError:
     HAS_NIMBLE = False
 
-KINEMATIC_PARENT = {1: 0, 2: 1, 3: 2, 4: 0, 5: 4, 6: 5, 11: 8, 12: 11, 13: 12, 14: 8, 15: 14, 16: 15}
-EVAL_ORDER = [1, 4, 14, 11, 2, 5, 15, 12, 3, 6, 16, 13]
+KINEMATIC_PARENT = {
+    1: 0, 2: 1, 3: 2, 4: 0, 5: 4, 6: 5,
+    7: 0, 8: 7, 9: 8, 10: 9,
+    11: 8, 12: 11, 13: 12, 14: 8, 15: 14, 16: 15,
+}
+EVAL_ORDER = [7, 8, 9, 10, 1, 4, 14, 11, 2, 5, 15, 12, 3, 6, 16, 13]
 
 
 def is_nimble_available() -> bool:
@@ -199,12 +203,14 @@ def _prepare_optimization_tensors(
     c1, c2 = np.clip(confidence1, 0.0, 1.0), np.clip(confidence2, 0.0, 1.0)
     w_dst = np.sqrt(c1 * c2) if weights_dst is None else weights_dst
     out_mask = np.zeros(len(c1), dtype=bool) if is_outlier is None else is_outlier
-    reliability = np.clip(w_dst * np.where(out_mask, 0.5, 1.0), 0.02, 1.0)
-    reliability = np.where((c1 > 0) & (c2 > 0), reliability, 0.0)
+    # For occluded/outlier joints, strongly discount ray data loss and anchor loss
+    ray_weight_multiplier = np.where(out_mask, 0.05, 1.0)
+    anchor_multiplier = np.where(out_mask, 0.05, 1.0)
+    reliability = np.clip(w_dst * ray_weight_multiplier, 0.01, 1.0)
     reproj_dst = reliability
     w1_t = torch.as_tensor(reproj_dst, dtype=torch.float32, device=device)
     w2_t = torch.as_tensor(reproj_dst, dtype=torch.float32, device=device)
-    anchor_w = torch.as_tensor(reliability, dtype=torch.float32, device=device)
+    anchor_w = torch.as_tensor(w_dst * anchor_multiplier, dtype=torch.float32, device=device)
     if bone_reliability_modulation:
         bone_w = {b: max(1.0 - reliability[b[0]], 1.0 - reliability[b[1]]) for b in bone_lengths}
     else:
@@ -253,6 +259,8 @@ def triangulate_physics_refine(
     if use_nimble_ik and HAS_NIMBLE:
         return fit_skeleton_nimble(init_3d, weights=weights_dst, max_steps=min(iterations, 50))
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
+    if is_outlier is not None and np.any(is_outlier):
+        init_3d = _clamp_outlier_kinematics(init_3d, bone_lengths, is_outlier)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pose, anchor_t, w1_t, w2_t, anchor_w, bone_tensors, sym_tensors = _prepare_optimization_tensors(
         confidence1, confidence2, weights_dst, is_outlier, bone_lengths, init_3d, device,

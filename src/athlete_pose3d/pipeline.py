@@ -24,12 +24,14 @@ from .algorithms.geometry import (
     triangulate_ransac,
 )
 
+from .algorithms.evidence_fusion import detect_stereo_occlusions
 from .algorithms.physics_refine import triangulate_dst_physics, triangulate_physics_refine
 from .algorithms.refinement import refine_results
 from .algorithms.synchronization import estimate_dynamic_offsets, select_best_pair, select_synced_pose
 from .algorithms.uncalibrated import uncalibrated_triangulation
 from .io.data import PoseRepository, extract_gt_3d, load_json
 from .settings import BenchmarkConfig, method_label
+
 
 
 def _sample_key_frames(frames: list[int], limit: int) -> list[int]:
@@ -366,6 +368,14 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
     primary, pair, best = method_results[selected_label], context["pair_info"], context["best_pair"]
     dlt_mpjpe = dlt_baseline["mpjpe"] if dlt_baseline else float("nan")
     dlt_pa = dlt_baseline["pa_mpjpe"] if dlt_baseline else float("nan")
+
+    occ_info = detect_stereo_occlusions(
+        context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
+        left["conf_h36m"], right["conf_h36m"],
+        bone_lengths=context.get("bone_lengths"),
+        initial_3d=primary.get("recon_3d"),
+    )
+
     result = {
         "motion": pair["motion"], "subject": pair["subject"],
         "cam_a": context["camera_a"]["cam_id"], "cam_b": context["camera_b"]["cam_id"],
@@ -380,7 +390,10 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
     }
     result.update({
         "kps2d_a_h36m": left["kps_h36m"], "kps2d_b_h36m": right["kps_h36m"],
-        "conf_a_h36m": left["conf_h36m"], "conf_b_h36m": right["conf_h36m"],
+        "conf_a_h36m": occ_info["conf_a"], "conf_b_h36m": occ_info["conf_b"],
+        "stereo_conf_h36m": occ_info["stereo_confidence"],
+        "occluded_mask": occ_info["occluded_mask"],
+        "is_outlier": occ_info["is_outlier"],
         "global_sync_delta": best["delta"], "dynamic_sync_delta": dynamic_offset,
         "local_sync_delta": local_offset, "sync_pair_score": sync_score,
         "dynamic_sync_score": dynamic_score, "best_method": selected_label,

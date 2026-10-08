@@ -48,7 +48,31 @@ class SystemInfo:
 
 def _extract_confidence_and_occlusion(result):
     """Extract per-joint stereo confidence and occlusion status for H36M joints.
-    A joint is marked as occluded if confidence <= 0.3 in at least one camera."""
+    Uses multi-criteria stereo geometry & DST detection if available, falling back
+    to 2D confidence thresholding (<= 0.3)."""
+    if result.get("occluded_mask") is not None:
+        occluded_mask = np.asarray(result["occluded_mask"], dtype=bool).flatten()[:17]
+        ca = np.asarray(result.get("conf_a_h36m", np.ones(17)), dtype=float).flatten()[:17]
+        cb = np.asarray(result.get("conf_b_h36m", np.ones(17)), dtype=float).flatten()[:17]
+        stereo_conf = np.asarray(result.get("stereo_conf_h36m", 0.5 * (ca + cb)), dtype=float).flatten()[:17]
+        return ca, cb, stereo_conf, occluded_mask
+
+    # If P1, P2, kps2d are available in result, run detect_stereo_occlusions dynamically
+    p1, p2 = result.get("P1"), result.get("P2")
+    kps_a = result.get("kps2d_a_h36m") if result.get("kps2d_a_h36m") is not None else result.get("kps2d_a")
+    kps_b = result.get("kps2d_b_h36m") if result.get("kps2d_b_h36m") is not None else result.get("kps2d_b")
+    if p1 is not None and p2 is not None and kps_a is not None and kps_b is not None:
+        try:
+            from ..algorithms.evidence_fusion import detect_stereo_occlusions
+            occ_info = detect_stereo_occlusions(
+                p1, p2, kps_a, kps_b,
+                result.get("conf_a_h36m"), result.get("conf_b_h36m"),
+                initial_3d=result.get("recon_3d"),
+            )
+            return occ_info["conf_a"], occ_info["conf_b"], occ_info["stereo_confidence"], occ_info["occluded_mask"]
+        except Exception:
+            pass
+
     ca = result.get("conf_a_h36m")
     if ca is None:
         ca = result.get("conf_a")

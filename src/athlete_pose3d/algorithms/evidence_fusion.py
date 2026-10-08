@@ -386,3 +386,102 @@ def fuse_evidences(
         weights = np.clip(vf * (1.0 - total_conflict), 0.02, 1.0)
     is_outlier = (total_conflict > conflict_threshold) | (nvf > vf)
     return weights, total_conflict, is_outlier
+
+
+def detect_stereo_occlusions(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    points1: np.ndarray,
+    points2: np.ndarray,
+    conf1: np.ndarray | None = None,
+    conf2: np.ndarray | None = None,
+    bone_lengths: dict | None = None,
+    initial_3d: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """
+    Automatic multi-criteria stereo occlusion & reliability detector for 2-camera pose estimation:
+    1. 2D missing/invalid coordinates or low detector confidence (<= 0.3).
+    2. Epipolar constraint violation (Sampson distance above baseline).
+    3. Biomechanical bone deformation (> 35% error vs anatomical prior).
+    4. Dempster-Shafer fusion outlier (is_outlier from fused evidence).
+    """
+    pts1 = np.asarray(points1, dtype=float)
+    pts2 = np.asarray(points2, dtype=float)
+    n = len(pts1)
+
+    c1 = np.ones(n, dtype=float) if conf1 is None else np.asarray(conf1, dtype=float).flatten()[:n].copy()
+    c2 = np.ones(n, dtype=float) if conf2 is None else np.asarray(conf2, dtype=float).flatten()[:n].copy()
+
+    # Invalidate coordinates with NaN or zero
+    c1[~np.isfinite(pts1).all(axis=-1) | (pts1[:, 0] == 0) & (pts1[:, 1] == 0)] = 0.0
+    c2[~np.isfinite(pts2).all(axis=-1) | (pts2[:, 0] == 0) & (pts2[:, 1] == 0)] = 0.0
+
+    # 1. Sampson residual (pixels)
+    try:
+        fundamental = fundamental_from_projections(p1, p2)
+        h1 = np.column_stack((pts1, np.ones(n)))
+        h2 = np.column_stack((pts2, np.ones(n)))
+        f_x1 = h1 @ fundamental.T
+        ft_x2 = h2 @ fundamental
+        num = np.sum(h2 * f_x1, axis=1) ** 2
+        denom = f_x1[:, 0] ** 2 + f_x1[:, 1] ** 2 + ft_x2[:, 0] ** 2 + ft_x2[:, 1] ** 2
+        res = np.sqrt(num / np.maximum(denom, 1e-12))
+    except Exception:
+        res = np.zeros(n)
+
+    # 2. Biomechanical bone errors
+    if initial_3d is None:
+        try:
+            from .geometry import triangulate_dlt
+            initial_3d = triangulate_dlt(p1, p2, pts1, pts2)
+        except Exception:
+            initial_3d = triangulate_ray_midpoint(p1, p2, pts1, pts2)
+
+    if bone_lengths is not None and initial_3d is not None and np.isfinite(initial_3d).all():
+        bone_errs = np.array([_joint_bone_error(j, initial_3d, bone_lengths) for j in range(n)])
+    else:
+        bone_errs = np.zeros(n)
+
+    # 3. DST Evidence Fusion Outlier
+    if bone_lengths is not None and np.isfinite(p1).all() and np.isfinite(p2).all():
+        try:
+            _, _, is_out = fuse_evidences(c1, c2, p1, p2, pts1, pts2, bone_lengths, initial_3d=initial_3d)
+        except Exception:
+            is_out = np.zeros(n, dtype=bool)
+    else:
+        is_out = np.zeros(n, dtype=bool)
+
+    # 4. Multi-criteria Occlusion Decision
+    med_res = float(np.median(res)) if np.isfinite(res).all() and len(res) > 0 else 0.0
+    epipolar_outlier = (res > 1.25 * med_res) & (res > 15.0) if med_res > 0 else np.zeros(n, dtype=bool)
+    severe_epipolar = (res > 1.45 * med_res) if med_res > 0 else np.zeros(n, dtype=bool)
+    bone_outlier = bone_errs > 0.35
+    detector_occ = (c1 <= 0.3) | (c2 <= 0.3)
+
+    occluded_mask = detector_occ | is_out | severe_epipolar | (epipolar_outlier & bone_outlier)
+    # Pelvis root is unoccluded if coordinates are finite
+    if np.isfinite(pts1[0]).all() and np.isfinite(pts2[0]).all():
+        occluded_mask[0] = False
+
+    # 5. Calculate realistic stereo confidence
+    stereo_conf = np.zeros(n)
+    for j in range(n):
+        if occluded_mask[j]:
+            # Occluded: confidence <= 0.3
+            ratio = min(res[j] / max(med_res, 1.0), 3.0) if med_res > 0 else 2.0
+            stereo_conf[j] = float(np.clip(0.30 / ratio, 0.05, 0.28))
+        else:
+            # Unoccluded: confidence >= 0.7
+            ratio = max(res[j] / max(med_res, 1.0), 1.0) if med_res > 0 else 1.0
+            stereo_conf[j] = float(np.clip(0.95 - 0.15 * (ratio - 1.0), 0.70, 0.98))
+
+    return {
+        "occluded_mask": occluded_mask,
+        "stereo_confidence": stereo_conf,
+        "conf_a": stereo_conf,
+        "conf_b": stereo_conf,
+        "is_outlier": is_out,
+        "sampson_res": res,
+        "bone_errs": bone_errs,
+    }
+
