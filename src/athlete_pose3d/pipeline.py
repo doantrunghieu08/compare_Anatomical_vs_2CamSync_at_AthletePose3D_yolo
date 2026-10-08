@@ -151,7 +151,7 @@ def _resolve_context_height(pair_info, config):
     return height, h36m_bone_lengths_from_height(height)
 
 
-def _estimate_uncalib_p1_p2(video_a, video_b, frames, delta, repository, bone_lengths):
+def _estimate_uncalib_p1_p2(video_a, video_b, frames, delta, repository, bone_lengths, f_scale: float | str = "auto"):
     points_a, points_b, confidence_a, confidence_b = [], [], [], []
     sample_ids = np.linspace(0, len(frames) - 1, min(20, len(frames)), dtype=int) if frames else []
     for sample_index in sample_ids:
@@ -169,7 +169,8 @@ def _estimate_uncalib_p1_p2(video_a, video_b, frames, delta, repository, bone_le
         return None, None
     try:
         _, p1, p2 = uncalibrated_triangulation(
-            np.asarray(points_a), np.asarray(points_b), np.asarray(confidence_a), np.asarray(confidence_b), bone_lengths
+            np.asarray(points_a), np.asarray(points_b), np.asarray(confidence_a), np.asarray(confidence_b),
+            bone_lengths, f_scale=f_scale,
         )
         return p1, p2
     except (ValueError, np.linalg.LinAlgError):
@@ -235,7 +236,8 @@ def _load_motion_context(pair_info, best_pair, repository, config):
     height, bone_lengths = _resolve_context_height(pair_info, config)
     if bone_lengths is not None:
         bone_lengths = _harmonize_symmetric_bones(bone_lengths)
-    u1, u2 = _estimate_uncalib_p1_p2(video_a, video_b, frames, best_pair["delta"], repository, bone_lengths)
+    f_scale = getattr(config, "f_scale", "auto")
+    u1, u2 = _estimate_uncalib_p1_p2(video_a, video_b, frames, best_pair["delta"], repository, bone_lengths, f_scale=f_scale)
     if u1 is not None and u2 is not None:
         p1, p2 = u1, u2
     ctx = {
@@ -456,9 +458,11 @@ def run_benchmark_chunk(multicam_pairs, repository, config, valid_videos=None):
     if not results or not refinement.pop("enabled"):
         return results
     source_method = method_label(config.triangulation_method)
+    bone_lengths = h36m_bone_lengths_from_height(config.subject_height_mm)
     return refine_results(
         results,
         source_method=source_method,
         target_method=f"{source_method} + SequenceRefine",
+        bone_lengths=bone_lengths,
         **refinement,
     )

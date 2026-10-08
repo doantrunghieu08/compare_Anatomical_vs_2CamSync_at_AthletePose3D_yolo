@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .geometry import H36M_BONES, triangulate_dlt
+from .geometry import CLEAR_JOINTS, H36M_BONES, triangulate_dlt
 
 
 def normalize_2d_points(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -143,7 +143,19 @@ def uncalibrated_triangulation(
     valid = np.isfinite(pts1).all(-1) & np.isfinite(pts2).all(-1) & (np.minimum(c1, c2) >= 0.05)
     flat1, flat2 = pts1.reshape(-1, 2), pts2.reshape(-1, 2)
     flat_c1, flat_c2, flat_valid = c1.ravel(), c2.ravel(), valid.ravel()
-    fundamental = estimate_fundamental_matrix(flat1, flat2, flat_c1, flat_c2)
+    # ponytail: only use direct COCO joints (CLEAR_JOINTS) for F estimation to avoid synthetic joint bias
+    if pts1.shape[1] == 17:
+        clear_pts1 = pts1[:, CLEAR_JOINTS, :].reshape(-1, 2)
+        clear_pts2 = pts2[:, CLEAR_JOINTS, :].reshape(-1, 2)
+        clear_c1 = c1[:, CLEAR_JOINTS].ravel()
+        clear_c2 = c2[:, CLEAR_JOINTS].ravel()
+        clear_valid = np.isfinite(clear_pts1).all(-1) & np.isfinite(clear_pts2).all(-1) & (np.minimum(clear_c1, clear_c2) >= 0.05)
+        if clear_valid.sum() >= 8:
+            fundamental = estimate_fundamental_matrix(clear_pts1[clear_valid], clear_pts2[clear_valid], clear_c1[clear_valid], clear_c2[clear_valid])
+        else:
+            fundamental = estimate_fundamental_matrix(flat1[flat_valid], flat2[flat_valid], flat_c1[flat_valid], flat_c2[flat_valid])
+    else:
+        fundamental = estimate_fundamental_matrix(flat1[flat_valid], flat2[flat_valid], flat_c1[flat_valid], flat_c2[flat_valid])
 
     # ponytail: if f_scale is auto, scan candidates for minimum bone instability
     if isinstance(f_scale, str) and f_scale.lower() == "auto":
@@ -197,9 +209,18 @@ def uncalibrated_sync_score(
     try:
         points_3d, p1, p2 = uncalibrated_triangulation(pts1, pts2, conf1, conf2, bone_lengths)
         flat_valid = valid.ravel()
-        fundamental = estimate_fundamental_matrix(pts1.reshape(-1, 2)[flat_valid],
-                                                    pts2.reshape(-1, 2)[flat_valid],
-                                                    c1.ravel()[flat_valid], c2.ravel()[flat_valid])
+        if pts1.shape[1] == 17:
+            clear_pts1 = pts1[:, CLEAR_JOINTS, :].reshape(-1, 2)
+            clear_pts2 = pts2[:, CLEAR_JOINTS, :].reshape(-1, 2)
+            clear_c1 = c1[:, CLEAR_JOINTS].ravel()
+            clear_c2 = c2[:, CLEAR_JOINTS].ravel()
+            clear_valid = np.isfinite(clear_pts1).all(-1) & np.isfinite(clear_pts2).all(-1) & (np.minimum(clear_c1, clear_c2) >= 0.05)
+            if clear_valid.sum() >= 8:
+                fundamental = estimate_fundamental_matrix(clear_pts1[clear_valid], clear_pts2[clear_valid], clear_c1[clear_valid], clear_c2[clear_valid])
+            else:
+                fundamental = estimate_fundamental_matrix(pts1.reshape(-1, 2)[flat_valid], pts2.reshape(-1, 2)[flat_valid], c1.ravel()[flat_valid], c2.ravel()[flat_valid])
+        else:
+            fundamental = estimate_fundamental_matrix(pts1.reshape(-1, 2)[flat_valid], pts2.reshape(-1, 2)[flat_valid], c1.ravel()[flat_valid], c2.ravel()[flat_valid])
         epi = np.median(sampson_epipolar_distance(pts1.reshape(-1, 2)[flat_valid],
                                                   pts2.reshape(-1, 2)[flat_valid], fundamental))
         bone_errors = [abs(np.linalg.norm(points_3d[t, a] - points_3d[t, b]) - target) / target

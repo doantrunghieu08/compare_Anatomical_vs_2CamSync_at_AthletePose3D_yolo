@@ -92,6 +92,7 @@ class BenchmarkConfig:
     bone_prior_min_confidence: float
     reference_fps: float = 60.0
     fps_mode: str | float = "auto"
+    f_scale: str | float = "auto"
     subject_fps: dict[str, str | float] = field(default_factory=dict)
     included_subjects: tuple[str, ...] = ()
     uncalibrated: bool = False
@@ -173,6 +174,7 @@ def _load_benchmark(raw):
     values.setdefault("subject_fps", {})
     values.setdefault("reference_fps", 60.0)
     values.setdefault("fps_mode", "auto")
+    values.setdefault("f_scale", "auto")
     values.setdefault("included_subjects", ())
     values.setdefault("uncalibrated", False)
     values.update(

@@ -233,7 +233,10 @@ def _total_pair_score(validation, offset):
             + 0.08 * abs(offset))
 
 
-def _recover_uncalibrated_p1_p2(repository, video_a, video_b, frames, best_offset, frame_count_b, bone_lengths):
+def _recover_uncalibrated_p1_p2(
+    repository, video_a, video_b, frames, best_offset, frame_count_b, bone_lengths,
+    f_scale: float | str = "auto",
+):
     points_a, points_b, confidence_a, confidence_b = [], [], [], []
     for frame in frames:
         other = int(frame + best_offset)
@@ -250,7 +253,8 @@ def _recover_uncalibrated_p1_p2(repository, video_a, video_b, frames, best_offse
         return None, None
     try:
         _, p1, p2 = uncalibrated_triangulation(
-            np.asarray(points_a), np.asarray(points_b), np.asarray(confidence_a), np.asarray(confidence_b), bone_lengths
+            np.asarray(points_a), np.asarray(points_b), np.asarray(confidence_a), np.asarray(confidence_b),
+            bone_lengths, f_scale=f_scale,
         )
         return p1, p2
     except (ValueError, np.linalg.LinAlgError):

@@ -143,13 +143,40 @@ class CsvResultReporter:
         if summary:
             self._append([summary])
             self._print_summary(summary)
-        # ponytail: compute sequence-level rotation & scale diagnosis across poses
-        valid_pairs = [(r["recon_3d"], r["gt_3d"]) for r in self._all_results if "recon_3d" in r and r.get("gt_3d") is not None]
-        if valid_pairs:
-            preds, gts = zip(*valid_pairs)
-            from ..algorithms.geometry import sequence_diagnosis
-            diag = sequence_diagnosis(np.stack(preds), np.stack(gts))
-            print(f"Sequence Diagnosis: Angle={diag['angle_deg']:.1f}° | Scale={diag['scale_ratio']:.3f} | MPJPE-SeqRot={diag['mpjpe_seq_rot_mm']:.2f} mm | MPJPE-SeqSim={diag['mpjpe_seq_sim_mm']:.2f} mm")
+        # ponytail: compute sequence-level rotation & scale diagnosis per camera pair
+        from collections import defaultdict
+        from ..algorithms.geometry import sequence_diagnosis
+
+        pair_groups = defaultdict(list)
+        for r in self._all_results:
+            if (
+                "recon_3d" in r
+                and r.get("gt_3d") is not None
+                and np.isfinite(r["recon_3d"]).all()
+                and np.isfinite(r["gt_3d"]).all()
+            ):
+                key = (r.get("subject", ""), r.get("motion", ""), r.get("cam_a", ""), r.get("cam_b", ""))
+                pair_groups[key].append((r["recon_3d"], r["gt_3d"]))
+
+        if pair_groups:
+            pair_diags = []
+            for key, pairs in pair_groups.items():
+                if len(pairs) >= 1:
+                    preds, gts = zip(*pairs)
+                    diag = sequence_diagnosis(np.stack(preds), np.stack(gts))
+                    pair_diags.append((len(pairs), diag))
+
+            total_frames = sum(cnt for cnt, _ in pair_diags)
+            if total_frames > 0:
+                mean_angle = sum(cnt * d["angle_deg"] for cnt, d in pair_diags) / total_frames
+                mean_scale = sum(cnt * d["scale_ratio"] for cnt, d in pair_diags) / total_frames
+                mean_rot = sum(cnt * d["mpjpe_seq_rot_mm"] for cnt, d in pair_diags) / total_frames
+                mean_sim = sum(cnt * d["mpjpe_seq_sim_mm"] for cnt, d in pair_diags) / total_frames
+                print(f"Sequence Diagnosis (Per Camera Pair, N = {len(pair_diags)} pairs, {total_frames} frames):")
+                print(f"  Mean Rotation Angle: {mean_angle:.1f}° (Góc quay giữa hệ Camera 1 và Mocap GT)")
+                print(f"  Mean Scale Ratio:    {mean_scale:.3f} (Độ khớp scale metric so với GT)")
+                print(f"  MPJPE-SeqRot:        {mean_rot:.2f} mm (MPJPE sau khi khử lệch hệ quy chiếu Camera 1 -> GT)")
+                print(f"  MPJPE-SeqSim:        {mean_sim:.2f} mm (MPJPE sau khi khử quay + scale)")
         self._append([["End"] * len(REPORT_HEADERS)])
 
     def _print_summary(self, s):

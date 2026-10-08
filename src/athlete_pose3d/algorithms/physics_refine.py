@@ -291,12 +291,13 @@ def triangulate_dst_physics(
     from .evidence_fusion import fuse_evidences
     from .geometry import triangulate_dlt
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
+    init_3d = triangulate_dlt(p1, p2, points1, points2)
     weights_dst, _, is_outlier = fuse_evidences(
         confidence1, confidence2, p1, p2, points1, points2, bone_lengths,
+        initial_3d=init_3d,
         sources=fusion_sources, epi_mode=fusion_epi_mode, rule=fusion_rule,
         unknown_trust=fusion_unknown_trust, bone_mode=fusion_bone_mode,
     )
-    init_3d = triangulate_dlt(p1, p2, points1, points2)
     return triangulate_physics_refine(
         p1, p2, points1, points2, confidence1, confidence2,
         bone_lengths=bone_lengths, bone_weight=bone_weight,
