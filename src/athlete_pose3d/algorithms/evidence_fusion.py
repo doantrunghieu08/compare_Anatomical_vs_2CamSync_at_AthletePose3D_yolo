@@ -13,6 +13,10 @@ def compute_yolo_bba(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     c1 = np.clip(np.asarray(conf_a, dtype=float), 0.0, 1.0)
     c2 = np.clip(np.asarray(conf_b, dtype=float), 0.0, 1.0)
+    # ponytail: vacuous belief when confidences are missing / uniform 1.0, prevents fake 0.98 certainty
+    if np.allclose(c1, 1.0) and np.allclose(c2, 1.0):
+        n = len(c1)
+        return np.zeros(n), np.zeros(n), np.ones(n)
     m_v = c1 * c2
     m_nv = (1.0 - np.maximum(c1, c2)) ** 2
     total = m_v + m_nv
@@ -21,6 +25,7 @@ def compute_yolo_bba(
     m_nv = m_nv * scale
     m_theta = np.clip(1.0 - m_v - m_nv, 0.02, 1.0)
     return m_v, m_nv, m_theta
+
 
 
 def _camera_center_and_ray(p: np.ndarray, pt: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
