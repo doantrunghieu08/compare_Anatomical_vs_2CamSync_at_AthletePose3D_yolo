@@ -173,10 +173,10 @@ class CsvResultReporter:
                 mean_rot = sum(cnt * d["mpjpe_seq_rot_mm"] for cnt, d in pair_diags) / total_frames
                 mean_sim = sum(cnt * d["mpjpe_seq_sim_mm"] for cnt, d in pair_diags) / total_frames
                 print(f"Sequence Diagnosis (Per Camera Pair, N = {len(pair_diags)} pairs, {total_frames} frames):")
-                print(f"  Mean Rotation Angle: {mean_angle:.1f}° (Góc quay giữa hệ Camera 1 và Mocap GT)")
-                print(f"  Mean Scale Ratio:    {mean_scale:.3f} (Độ khớp scale metric so với GT)")
-                print(f"  MPJPE-SeqRot:        {mean_rot:.2f} mm (MPJPE sau khi khử lệch hệ quy chiếu Camera 1 -> GT)")
-                print(f"  MPJPE-SeqSim:        {mean_sim:.2f} mm (MPJPE sau khi khử quay + scale)")
+                print(f"  Mean Rotation Angle: {mean_angle:.1f} deg (Rotation offset between Camera 1 and Mocap GT)")
+                print(f"  Mean Scale Ratio:    {mean_scale:.3f} (Metric scale ratio vs GT)")
+                print(f"  MPJPE-SeqRot:        {mean_rot:.2f} mm (MPJPE after aligning Camera 1 -> GT coordinate frame)")
+                print(f"  MPJPE-SeqSim:        {mean_sim:.2f} mm (MPJPE after rigid rotation + scale alignment)")
         self._append([["End"] * len(REPORT_HEADERS)])
 
     def _print_summary(self, s):
