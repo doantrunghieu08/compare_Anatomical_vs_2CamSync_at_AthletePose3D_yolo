@@ -15,7 +15,7 @@ DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "default.yml"
 
 def _apply_overrides(
     inputs, output, config, input_overrides, output_path, max_pairs, overwrite,
-    method_name=None, subject_height=None, uncalibrated=None,
+    method_name=None, subject_height=None,
     included_subjects=None, fps_override=None,
 ):
     if input_overrides:
@@ -31,8 +31,6 @@ def _apply_overrides(
     if method_name is not None:
         options = config.method_options if method_name == config.triangulation_method else {}
         config = replace(config, triangulation_method=method_name, method_options=options)
-    if uncalibrated is not None:
-        config = replace(config, uncalibrated=uncalibrated)
     if subject_height is not None:
         try:
             h_val = float(subject_height)
@@ -82,13 +80,13 @@ def _run_chunks(pairs, repository, config, valid_videos, reporter):
 def run_benchmark(
     config_path: str | Path = DEFAULT_CONFIG, *, input_overrides=None,
     output_path=None, max_pairs=None, overwrite=None, method_name=None,
-    subject_height=None, uncalibrated=None, included_subjects=None,
+    subject_height=None, included_subjects=None,
     fps_override=None,
 ):
     inputs, output, config = load_settings(config_path)
     inputs, output, config = _apply_overrides(
         inputs, output, config, input_overrides, output_path, max_pairs, overwrite,
-        method_name, subject_height, uncalibrated, included_subjects, fps_override,
+        method_name, subject_height, included_subjects, fps_override,
     )
     if output.results_csv.exists() and not output.overwrite:
         raise FileExistsError(f"Output already exists: {output.results_csv}. Pass --overwrite to replace it.")
@@ -121,7 +119,6 @@ def build_parser():
     parser.add_argument("--max-pairs", type=int, help="Override pipeline.max_pairs from YAML.")
     parser.add_argument("--method", type=str, help="Override method.name from YAML.")
     parser.add_argument("--subject-height", type=str, help="Subject height in mm (e.g. 1732.0) or 'auto'.")
-    parser.add_argument("--uncalibrated", action="store_true", default=None, help="Run without camera parameters after pair selection.")
     parser.add_argument("--overwrite", action="store_true", default=None, help="Replace an existing output CSV.")
     parser.add_argument("-S1", "--S1", dest="s1", action="store_true", help="Run only subject S1.")
     parser.add_argument("-S2", "--S2", dest="s2", action="store_true", help="Run only subject S2.")
@@ -161,7 +158,6 @@ def main(argv=None):
         overwrite=args.overwrite,
         method_name=args.method,
         subject_height=args.subject_height,
-        uncalibrated=args.uncalibrated,
         included_subjects=subjects if subjects else None,
         fps_override=args.fps,
     )

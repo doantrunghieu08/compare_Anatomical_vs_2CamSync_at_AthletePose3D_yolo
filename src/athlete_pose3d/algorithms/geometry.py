@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 
 import numpy as np
 import torch
@@ -42,33 +41,6 @@ H36M_JOINT_NAMES = (
     "Spine", "Thorax", "Neck", "Head", "L_Shoulder", "L_Elbow", "L_Wrist",
     "R_Shoulder", "R_Elbow", "R_Wrist",
 )
-
-
-
-def build_projection_matrix(camera: Mapping) -> np.ndarray:
-    intrinsics = camera["affine_intrinsics_matrix"]
-    k = np.array(
-        [
-            [intrinsics[0][0], 0, intrinsics[0][2]],
-            [0, intrinsics[1][1], intrinsics[1][2]],
-            [0, 0, 1],
-        ],
-        dtype=float,
-    )
-    rotation = np.asarray(camera["extrinsic_matrix"], dtype=float).copy()
-    rotation[1:, :] *= -1
-    translation = np.asarray(camera["xyz"], dtype=float)
-    extrinsics = np.hstack([rotation, (-rotation @ translation).reshape(3, 1)])
-    return k @ extrinsics
-
-
-def project_3d_to_2d_torch(points_3d: torch.Tensor, projection: torch.Tensor) -> torch.Tensor:
-    homogeneous = torch.cat(
-        [points_3d, torch.ones((len(points_3d), 1), dtype=points_3d.dtype, device=points_3d.device)],
-        dim=-1,
-    )
-    projected = projection @ homogeneous.T
-    return (projected[:2] / projected[2]).T
 
 
 def reproject(projection: np.ndarray, point_3d: np.ndarray) -> np.ndarray:
@@ -415,25 +387,28 @@ def triangulate_dst_anatomical(
     bone_weight=1.0,
     iterations=80,
     conflict_threshold=0.65,
+    init_mode="dlt",
+    prev_pose_3d=None,
 ):
     from .evidence_fusion import fuse_evidences, triangulate_ray_midpoint
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
-    weights_dst, _, is_outlier = fuse_evidences(
+    if init_mode == "temporal" and prev_pose_3d is not None and np.isfinite(prev_pose_3d).all():
+        init_3d = prev_pose_3d.copy()
+    else:
+        init_3d = triangulate_ray_midpoint(p1, p2, points1, points2)
+    weights_dst, _, is_outlier, w_cam1, w_cam2 = fuse_evidences(
         confidence1, confidence2, p1, p2, points1, points2, bone_lengths,
-        conflict_threshold=conflict_threshold,
+        initial_3d=init_3d, conflict_threshold=conflict_threshold,
+        return_per_camera=True,
     )
-    weights_dst = weights_dst * np.where(is_outlier, 0.5, 1.0)
-    init_3d = triangulate_ray_midpoint(p1, p2, points1, points2)
     points_3d = torch.tensor(
         init_3d, dtype=torch.float32, device=device, requires_grad=True
     )
     p1_t, p2_t = (torch.as_tensor(v, dtype=torch.float32, device=device) for v in (p1, p2))
     pts1_t, pts2_t = (torch.as_tensor(v, dtype=torch.float32, device=device) for v in (points1, points2))
-    w1 = (np.clip(confidence1, 0.0, 1.0) ** 2) * weights_dst
-    w2 = (np.clip(confidence2, 0.0, 1.0) ** 2) * weights_dst
-    c1_t = torch.as_tensor(w1, dtype=torch.float32, device=device)
-    c2_t = torch.as_tensor(w2, dtype=torch.float32, device=device)
+    c1_t = torch.as_tensor(w_cam1, dtype=torch.float32, device=device)
+    c2_t = torch.as_tensor(w_cam2, dtype=torch.float32, device=device)
     optimizer = torch.optim.Adam([points_3d], lr=0.1)
     valid_bones = [(a, b, l) for (a, b), l in bone_lengths.items() if l > 0]
     b_idx_a = torch.tensor([v[0] for v in valid_bones], dtype=torch.long, device=device)
@@ -470,14 +445,35 @@ def procrustes_align(prediction: np.ndarray, target: np.ndarray, mask: np.ndarra
         prediction_mean, target_mean = prediction.mean(0), target.mean(0)
         prediction_centered, target_centered = prediction - prediction_mean, target - target_mean
     covariance = prediction_centered.T @ target_centered
+    if np.linalg.norm(covariance) < 1e-8:
+        return prediction - prediction_mean + target_mean
     u, _, vt = svd(covariance)
     rotation = vt.T @ np.diag([1, 1, np.linalg.det(vt.T @ u.T)]) @ u.T
     scale = np.trace(rotation @ covariance) / max(float(np.trace(prediction_centered.T @ prediction_centered)), 1e-8)
     return scale * ((prediction - prediction_mean) @ rotation.T) + target_mean
 
 
+def raw_mpjpe(prediction: np.ndarray, ground_truth: np.ndarray) -> float:
+    """Root-relative 16-joint H36M MPJPE in millimeters without rotation alignment."""
+    pred_rel = prediction - np.expand_dims(prediction[..., 0, :], axis=-2)
+    gt_rel = ground_truth - np.expand_dims(ground_truth[..., 0, :], axis=-2)
+    return float(np.mean(np.linalg.norm(
+        pred_rel[..., H36M_EVAL_JOINTS, :] - gt_rel[..., H36M_EVAL_JOINTS, :], axis=-1
+    )))
+
+
+def mpjpe(prediction: np.ndarray, ground_truth: np.ndarray, align_rotation: bool = True) -> float:
+    """Root-relative 16-joint H36M MPJPE in millimeters (rigid-aligned to GT coordinate frame by default)."""
+    if align_rotation:
+        return rigid_mpjpe(prediction, ground_truth)
+    return raw_mpjpe(prediction, ground_truth)
+
+
 def pa_mpjpe(prediction: np.ndarray, ground_truth: np.ndarray) -> float:
-    return mpjpe(procrustes_align(prediction, ground_truth, mask=H36M_EVAL_JOINTS), ground_truth)
+    aligned = procrustes_align(prediction, ground_truth, mask=H36M_EVAL_JOINTS)
+    return float(np.mean(np.linalg.norm(
+        aligned[..., H36M_EVAL_JOINTS, :] - ground_truth[..., H36M_EVAL_JOINTS, :], axis=-1
+    )))
 
 
 def rigid_align(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
@@ -490,14 +486,19 @@ def rigid_align(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray | N
         p_mean, t_mean = prediction.mean(0), target.mean(0)
         p_centered, t_centered = prediction - p_mean, target - t_mean
     covariance = p_centered.T @ t_centered
+    if np.linalg.norm(covariance) < 1e-8:
+        return prediction - p_mean + t_mean
     u, _, vt = svd(covariance)
     rotation = vt.T @ np.diag([1.0, 1.0, np.linalg.det(vt.T @ u.T)]) @ u.T
     return ((prediction - p_mean) @ rotation.T) + t_mean
 
 
 def rigid_mpjpe(prediction: np.ndarray, ground_truth: np.ndarray) -> float:
-    """Root-relative MPJPE after optimal SO(3) rigid rotation alignment."""
-    return mpjpe(rigid_align(prediction, ground_truth, mask=H36M_EVAL_JOINTS), ground_truth)
+    """Rigid-aligned MPJPE (optimal SO(3) rotation and translation, preserving metric scale)."""
+    aligned = rigid_align(prediction, ground_truth, mask=H36M_EVAL_JOINTS)
+    return float(np.mean(np.linalg.norm(
+        aligned[..., H36M_EVAL_JOINTS, :] - ground_truth[..., H36M_EVAL_JOINTS, :], axis=-1
+    )))
 
 
 def kabsch(p: np.ndarray, g: np.ndarray, with_scale: bool = False) -> tuple[np.ndarray, float]:

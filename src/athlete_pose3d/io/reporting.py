@@ -19,6 +19,7 @@ from ..algorithms.geometry import (
     H36M_EVAL_JOINTS,
     H36M_JOINT_NAMES,
     procrustes_align,
+    rigid_align,
     sequence_diagnosis,
 )
 from ..settings import REPORT_HEADERS
@@ -113,9 +114,8 @@ def _compute_frame_joint_errors(result):
     if recon is not None and gt is not None and np.isfinite(recon).all() and np.isfinite(gt).all():
         recon = np.asarray(recon, dtype=float)
         gt = np.asarray(gt, dtype=float)
-        p_rel = recon - recon[:1]
-        g_rel = gt - gt[:1]
-        joint_errs = np.linalg.norm(p_rel - g_rel, axis=-1)
+        aligned_rigid = rigid_align(recon, gt, mask=H36M_EVAL_JOINTS)
+        joint_errs = np.linalg.norm(aligned_rigid - gt, axis=-1)
 
         eval_errs = joint_errs[H36M_EVAL_JOINTS]
         eval_occl = occluded_mask[H36M_EVAL_JOINTS]
@@ -271,9 +271,8 @@ def _build_per_joint_analysis(results: list[dict]) -> pd.DataFrame:
         if recon is not None and gt is not None and np.isfinite(recon).all() and np.isfinite(gt).all():
             recon = np.asarray(recon, dtype=float)
             gt = np.asarray(gt, dtype=float)
-            p_rel = recon - recon[:1]
-            g_rel = gt - gt[:1]
-            errs = np.linalg.norm(p_rel - g_rel, axis=-1)
+            aligned_rigid = rigid_align(recon, gt, mask=H36M_EVAL_JOINTS)
+            errs = np.linalg.norm(aligned_rigid - gt, axis=-1)
 
             aligned = procrustes_align(recon, gt, mask=H36M_EVAL_JOINTS)
             pa_errs = np.linalg.norm(aligned - gt, axis=-1)
@@ -288,9 +287,8 @@ def _build_per_joint_analysis(results: list[dict]) -> pd.DataFrame:
         if dlt_m and "recon_3d" in dlt_m and dlt_m["recon_3d"] is not None:
             dlt_recon = np.asarray(dlt_m["recon_3d"], dtype=float)
             if np.isfinite(dlt_recon).all() and gt is not None and np.isfinite(gt).all():
-                d_rel = dlt_recon - dlt_recon[:1]
-                g_rel = gt - gt[:1]
-                d_errs = np.linalg.norm(d_rel - g_rel, axis=-1)
+                dlt_aligned = rigid_align(dlt_recon, gt, mask=H36M_EVAL_JOINTS)
+                d_errs = np.linalg.norm(dlt_aligned - gt, axis=-1)
                 for j in range(n_joints):
                     dlt_err_acc[j].append(float(d_errs[j]))
 

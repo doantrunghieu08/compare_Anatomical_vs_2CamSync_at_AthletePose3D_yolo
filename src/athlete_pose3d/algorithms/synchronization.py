@@ -79,46 +79,7 @@ def plausibility_score(
     )
 
 
-def estimate_pair_time_offset(
-    repository: PoseRepository,
-    video_a,
-    video_b,
-    p1,
-    p2,
-    frame_count_a,
-    frame_count_b,
-    score_options,
-    max_offset=45,
-    sample_count=7,
-    coarse_step=5,
-):
-    lower = min(max_offset + 2, max(0, frame_count_a // 4))
-    upper = max(lower + 1, min(frame_count_a - lower - 1, frame_count_b - 1))
-    frames = np.linspace(lower, upper, min(sample_count, max(1, upper - lower + 1)), dtype=int)
 
-    def score(delta):
-        scores = []
-        for frame in frames:
-            other_frame = int(frame + delta)
-            if not 0 <= other_frame < frame_count_b:
-                continue
-            left = repository.pose(video_a, int(frame))
-            right = repository.pose(video_b, other_frame)
-            if left and right:
-                scores.append(
-                    plausibility_score(
-                        p1, p2, left["kps_h36m"], right["kps_h36m"],
-                        left["conf_h36m"], right["conf_h36m"], **score_options,
-                    )
-                )
-        return robust_median(scores)
-
-    coarse_scores = {offset: score(offset) for offset in range(-max_offset, max_offset + 1, coarse_step)}
-    best_coarse = min(coarse_scores, key=coarse_scores.get)
-    refine_range = range(max(-max_offset, best_coarse - coarse_step), min(max_offset, best_coarse + coarse_step) + 1)
-    refined_scores = {offset: score(offset) for offset in refine_range}
-    best_offset = min(refined_scores, key=refined_scores.get)
-    return int(best_offset), float(refined_scores[best_offset])
 
 
 def _validation_frames(frame_count_a, frame_count_b, offset, samples, radius):
@@ -261,7 +222,7 @@ def _recover_uncalibrated_p1_p2(
         return None, None
 
 
-def estimate_pair_time_offset_uncalibrated(
+def estimate_pair_time_offset(
     repository: PoseRepository, video_a, video_b, frame_count_a, frame_count_b,
     bone_lengths, max_offset=45, sample_count=7, coarse_step=5, min_confidence=0.25, min_valid=8,
 ):
@@ -303,12 +264,15 @@ def estimate_pair_time_offset_uncalibrated(
     return int(best_offset), float(best_score), p1, p2
 
 
+estimate_pair_time_offset_uncalibrated = estimate_pair_time_offset
+
+
 def _pair_offset_and_p1_p2(
     repository, video_a, video_b, frame_count_a, frame_count_b,
     max_offset, sync_samples, coarse_step, score_options,
 ):
     bone_lens = score_options.get("bone_lengths") or h36m_bone_lengths_from_height()
-    return estimate_pair_time_offset_uncalibrated(
+    return estimate_pair_time_offset(
         repository, video_a, video_b, frame_count_a, frame_count_b, bone_lens,
         max_offset=max_offset, sample_count=sync_samples, coarse_step=coarse_step,
         min_confidence=score_options.get("minimum_confidence", 0.25),

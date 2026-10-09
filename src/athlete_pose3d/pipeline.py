@@ -8,7 +8,6 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from .algorithms.geometry import (
-    H36M_BONES,
     H36M_SYMMETRIC_BONES,
     estimate_bone_lengths_from_poses,
     h36m_bone_lengths_from_height,
@@ -28,7 +27,6 @@ from .algorithms.evidence_fusion import detect_stereo_occlusions
 from .algorithms.physics_refine import triangulate_dst_physics, triangulate_physics_refine
 from .algorithms.refinement import refine_results
 from .algorithms.synchronization import estimate_dynamic_offsets, select_best_pair, select_synced_pose
-from .algorithms.uncalibrated import uncalibrated_triangulation
 from .io.data import PoseRepository, extract_gt_3d, load_json
 from .settings import BenchmarkConfig, method_label
 
@@ -53,8 +51,6 @@ def _make_triangulation_function(method, options, config, bone_lens=None):
     if bone_lens is None:
         bone_lens = h36m_bone_lengths_from_height(config.subject_height_mm)
     opts = dict(options)
-    if method == "uncalibrated_metric":
-        return lambda p1, p2, k1, k2, c1, c2: uncalibrated_triangulation(k1, k2, c1, c2, bone_lens)[0]
     if method == "dst_physics":
         bone_w = opts.pop("bone_weight", 1.0)
         return partial(triangulate_dst_physics, bone_lengths=bone_lens, bone_weight=bone_w, **opts)
@@ -127,7 +123,7 @@ def _selected_triangulation(config: BenchmarkConfig):
         "ransac_dlt": {"reprojection_threshold"},
         "iterative_refine": {"iterations"},
         "anatomical": {"iterations", "bone_weight"},
-        "dst_anatomical": {"iterations", "bone_weight", "conflict_threshold"},
+        "dst_anatomical": {"iterations", "bone_weight", "conflict_threshold", "init_mode"},
         "physics_refine": {
             "iterations", "bone_weight", "ground_z", "lr", "use_nimble_ik",
             "data_weight", "anchor_weight", "sym_weight", "bone_reliability_modulation", "delta_ray_mm",
@@ -136,8 +132,8 @@ def _selected_triangulation(config: BenchmarkConfig):
             "iterations", "bone_weight", "ground_z", "lr", "use_nimble_ik",
             "data_weight", "anchor_weight", "sym_weight", "bone_reliability_modulation", "delta_ray_mm",
             "fusion_sources", "fusion_epi_mode", "fusion_rule", "fusion_unknown_trust", "fusion_bone_mode",
+            "init_mode", "hypothesis_selection",
         },
-        "uncalibrated_metric": {"iterations", "bone_weight"},
     }
     label = method_label(method)
     unknown = options.keys() - allowed_options[method]
@@ -153,30 +149,6 @@ def _resolve_context_height(pair_info, config):
     return height, h36m_bone_lengths_from_height(height)
 
 
-def _estimate_uncalib_p1_p2(video_a, video_b, frames, delta, repository, bone_lengths, f_scale: float | str = "auto"):
-    points_a, points_b, confidence_a, confidence_b = [], [], [], []
-    sample_ids = np.linspace(0, len(frames) - 1, min(20, len(frames)), dtype=int) if frames else []
-    for sample_index in sample_ids:
-        f = frames[int(sample_index)]
-        la = repository.pose(video_a, int(f))
-        lb = repository.pose(video_b, int(f + delta))
-        if la is not None and lb is not None:
-            c1, c2 = la["conf_h36m"], lb["conf_h36m"]
-            if (c1 > 0.3).sum() >= 8 and (c2 > 0.3).sum() >= 8:
-                points_a.append(la["kps_h36m"])
-                points_b.append(lb["kps_h36m"])
-                confidence_a.append(c1)
-                confidence_b.append(c2)
-    if not points_a:
-        return None, None
-    try:
-        _, p1, p2 = uncalibrated_triangulation(
-            np.asarray(points_a), np.asarray(points_b), np.asarray(confidence_a), np.asarray(confidence_b),
-            bone_lengths, f_scale=f_scale,
-        )
-        return p1, p2
-    except (ValueError, np.linalg.LinAlgError):
-        return None, None
 
 
 def _harmonize_symmetric_bones(bone_lengths: dict[tuple[int, int], float]) -> dict[tuple[int, int], float]:
@@ -238,10 +210,6 @@ def _load_motion_context(pair_info, best_pair, repository, config):
     height, bone_lengths = _resolve_context_height(pair_info, config)
     if bone_lengths is not None:
         bone_lengths = _harmonize_symmetric_bones(bone_lengths)
-    f_scale = getattr(config, "f_scale", "auto")
-    u1, u2 = _estimate_uncalib_p1_p2(video_a, video_b, frames, best_pair["delta"], repository, bone_lengths, f_scale=f_scale)
-    if u1 is not None and u2 is not None:
-        p1, p2 = u1, u2
     ctx = {
         "pair_info": pair_info, "best_pair": best_pair, "camera_a": camera_a, "camera_b": camera_b,
         "video_a": video_a, "video_b": video_b, "raw_gt": raw_gt, "frames": frames,
@@ -332,13 +300,20 @@ def _frame_inputs(context, frame, repository, config):
     return left, right, dynamic_offset, local_offset, sync_score, dynamic_score, ground_truth
 
 
-def _evaluate_methods(methods, context, left, right, ground_truth):
+def _evaluate_methods(methods, context, left, right, ground_truth, prev_pose_3d=None):
     results = {}
     for name, triangulate in methods.items():
-        reconstruction = triangulate(
-            context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
-            left["conf_h36m"], right["conf_h36m"],
-        )
+        try:
+            reconstruction = triangulate(
+                context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
+                left["conf_h36m"], right["conf_h36m"],
+                prev_pose_3d=prev_pose_3d,
+            )
+        except TypeError:
+            reconstruction = triangulate(
+                context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
+                left["conf_h36m"], right["conf_h36m"],
+            )
         groups = evaluate_joint_groups(reconstruction, ground_truth)
         results[name] = {
             "recon_3d": reconstruction,
@@ -437,13 +412,19 @@ def _process_motion(pair_info, repository, config, valid_videos, selected_label)
         config.triangulation_method, config.method_options, config, context["bone_lengths"],
     )
     results = []
+    prev_recon_3d = None
     for frame in context["frames"]:
         inputs = _frame_inputs(context, frame, repository, config)
         if inputs is None:
             continue
         left, right, ground_truth = inputs[0], inputs[1], inputs[-1]
         dlt_baseline = _dlt_synced_baseline(context, left, right, ground_truth)
-        method_results = _evaluate_methods({selected_label: triangulate_fn}, context, left, right, ground_truth)
+        method_results = _evaluate_methods(
+            {selected_label: triangulate_fn}, context, left, right, ground_truth,
+            prev_pose_3d=prev_recon_3d,
+        )
+        if selected_label in method_results and "recon_3d" in method_results[selected_label]:
+            prev_recon_3d = method_results[selected_label]["recon_3d"]
         results.append(_build_frame_result(context, frame, inputs, method_results, selected_label, dlt_baseline))
     return results
 

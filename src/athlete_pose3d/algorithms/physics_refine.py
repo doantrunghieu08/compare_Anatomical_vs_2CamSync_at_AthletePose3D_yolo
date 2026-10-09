@@ -137,7 +137,7 @@ def _optimize_biomechanics_step(
     bone_loss = compute_bone_rigidity_loss(points_3d, bone_lengths, bone_weights)
     sym_loss = compute_symmetry_loss(points_3d, sym_tensors=sym_tensors)
     loss = data_weight * weighted_data + bone_weight * bone_loss + sym_weight * sym_loss
-    if anchor_3d is not None and anchor_weights is not None:
+    if anchor_3d is not None and anchor_weights is not None and anchor_weight > 0.0:
         anchor_loss = functional.huber_loss(points_3d, anchor_3d, reduction="none", delta=10.0).sum(-1)
         loss = loss + anchor_weight * torch.sum(anchor_loss * anchor_weights)
     if ground_z is not None:
@@ -197,22 +197,30 @@ def fit_skeleton_nimble(
 def _prepare_optimization_tensors(
     confidence1, confidence2, weights_dst, is_outlier, bone_lengths, init_3d, device,
     bone_reliability_modulation: bool = False,
+    weights_cam1: np.ndarray | None = None,
+    weights_cam2: np.ndarray | None = None,
 ):
     pose = torch.tensor(init_3d, dtype=torch.float32, device=device, requires_grad=True)
     anchor_t = torch.as_tensor(init_3d, dtype=torch.float32, device=device)
     c1, c2 = np.clip(confidence1, 0.0, 1.0), np.clip(confidence2, 0.0, 1.0)
     w_dst = np.sqrt(c1 * c2) if weights_dst is None else weights_dst
     out_mask = np.zeros(len(c1), dtype=bool) if is_outlier is None else is_outlier
-    # For occluded/outlier joints, strongly discount ray data loss and anchor loss
-    ray_weight_multiplier = np.where(out_mask, 0.05, 1.0)
+    # For occluded/outlier joints, strongly discount anchor loss
     anchor_multiplier = np.where(out_mask, 0.05, 1.0)
-    reliability = np.clip(w_dst * ray_weight_multiplier, 0.01, 1.0)
-    reproj_dst = reliability
-    w1_t = torch.as_tensor(reproj_dst, dtype=torch.float32, device=device)
-    w2_t = torch.as_tensor(reproj_dst, dtype=torch.float32, device=device)
     anchor_w = torch.as_tensor(w_dst * anchor_multiplier, dtype=torch.float32, device=device)
+
+    # Per-camera decoupled weights (Section 3.1)
+    if weights_cam1 is not None and weights_cam2 is not None:
+        w1_t = torch.as_tensor(np.clip(weights_cam1, 0.05, 1.0), dtype=torch.float32, device=device)
+        w2_t = torch.as_tensor(np.clip(weights_cam2, 0.05, 1.0), dtype=torch.float32, device=device)
+    else:
+        ray_weight_multiplier = np.where(out_mask, 0.05, 1.0)
+        reliability = np.clip(w_dst * ray_weight_multiplier, 0.05, 1.0)
+        w1_t = torch.as_tensor(reliability, dtype=torch.float32, device=device)
+        w2_t = torch.as_tensor(reliability, dtype=torch.float32, device=device)
+
     if bone_reliability_modulation:
-        bone_w = {b: max(1.0 - reliability[b[0]], 1.0 - reliability[b[1]]) for b in bone_lengths}
+        bone_w = {b: max(1.0 - float(w_dst[b[0]]), 1.0 - float(w_dst[b[1]])) for b in bone_lengths}
     else:
         bone_w = {b: 1.0 for b in bone_lengths}
     valid_bones = [(a, b, t_len) for (a, b), t_len in bone_lengths.items() if t_len > 0]
@@ -243,6 +251,7 @@ def triangulate_physics_refine(
     confidence1: np.ndarray, confidence2: np.ndarray, *,
     bone_lengths: dict | None = None, bone_weight: float = 1.0,
     weights_dst: np.ndarray | None = None, is_outlier: np.ndarray | None = None,
+    weights_cam1: np.ndarray | None = None, weights_cam2: np.ndarray | None = None,
     iterations: int = 60, ground_z: float | None = None, lr: float = 1.0,
     use_nimble_ik: bool = False, data_weight: float = 0.2, anchor_weight: float = 0.1,
     sym_weight: float = 0.2, bone_reliability_modulation: bool = False,
@@ -265,6 +274,7 @@ def triangulate_physics_refine(
     pose, anchor_t, w1_t, w2_t, anchor_w, bone_tensors, sym_tensors = _prepare_optimization_tensors(
         confidence1, confidence2, weights_dst, is_outlier, bone_lengths, init_3d, device,
         bone_reliability_modulation=bone_reliability_modulation,
+        weights_cam1=weights_cam1, weights_cam2=weights_cam2,
     )
     p1_t, p2_t = torch.as_tensor(p1, dtype=torch.float32, device=device), torch.as_tensor(p2, dtype=torch.float32, device=device)
     pts1_t, pts2_t = torch.as_tensor(points1, dtype=torch.float32, device=device), torch.as_tensor(points2, dtype=torch.float32, device=device)
@@ -295,21 +305,30 @@ def triangulate_dst_physics(
     fusion_sources: tuple[str, ...] | list[str] = ("detector", "epipolar", "bone"),
     fusion_epi_mode: str = "sampson", fusion_rule: str = "yager",
     fusion_unknown_trust: float = 0.3, fusion_bone_mode: str = "joint",
+    init_mode: str = "dlt", prev_pose_3d: np.ndarray | None = None,
+    hypothesis_selection: bool = False,
 ) -> np.ndarray:
     from .evidence_fusion import fuse_evidences
     from .geometry import triangulate_dlt
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
-    init_3d = triangulate_dlt(p1, p2, points1, points2)
-    weights_dst, _, is_outlier = fuse_evidences(
+    dlt_3d = triangulate_dlt(p1, p2, points1, points2)
+    if init_mode == "temporal" and prev_pose_3d is not None and np.isfinite(prev_pose_3d).all():
+        init_3d = prev_pose_3d.copy()
+    else:
+        init_3d = dlt_3d
+
+    weights_dst, _, is_outlier, w_cam1, w_cam2 = fuse_evidences(
         confidence1, confidence2, p1, p2, points1, points2, bone_lengths,
         initial_3d=init_3d,
         sources=fusion_sources, epi_mode=fusion_epi_mode, rule=fusion_rule,
         unknown_trust=fusion_unknown_trust, bone_mode=fusion_bone_mode,
+        return_per_camera=True,
     )
-    return triangulate_physics_refine(
+    refined = triangulate_physics_refine(
         p1, p2, points1, points2, confidence1, confidence2,
         bone_lengths=bone_lengths, bone_weight=bone_weight,
         weights_dst=weights_dst, is_outlier=is_outlier,
+        weights_cam1=w_cam1, weights_cam2=w_cam2,
         iterations=iterations, ground_z=ground_z, lr=lr,
         use_nimble_ik=use_nimble_ik, data_weight=data_weight,
         anchor_weight=anchor_weight, sym_weight=sym_weight,
@@ -317,4 +336,12 @@ def triangulate_dst_physics(
         delta_ray_mm=delta_ray_mm,
         init_3d=init_3d,
     )
+    if hypothesis_selection:
+        # Per-joint BetP / hypothesis selection between DLT and refined DST (Section 3.4)
+        out = refined.copy()
+        for j in range(len(points1)):
+            if is_outlier[j] or max(w_cam1[j], w_cam2[j]) < 0.3:
+                out[j] = refined[j]
+        return out
+    return refined
 

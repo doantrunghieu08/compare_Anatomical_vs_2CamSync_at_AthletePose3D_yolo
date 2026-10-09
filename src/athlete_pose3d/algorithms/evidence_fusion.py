@@ -292,22 +292,66 @@ def compute_bone_bba(
     )
 
 
-def dempster_combine_pair(
-    bba1: tuple[np.ndarray, np.ndarray, np.ndarray],
-    bba2: tuple[np.ndarray, np.ndarray, np.ndarray],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    v1, nv1, u1 = bba1
-    v2, nv2, u2 = bba2
-    v0 = v1 * v2 + v1 * u2 + u1 * v2
-    nv0 = nv1 * nv2 + nv1 * u2 + u1 * nv2
-    u0 = u1 * u2
-    conflict = v1 * nv2 + nv1 * v2
-    safe_denom = np.maximum(1.0 - conflict, 1e-4)
-    v_norm = v0 / safe_denom
-    nv_norm = nv0 / safe_denom
-    u_norm = u0 / safe_denom
-    total = v_norm + nv_norm + u_norm
-    return v_norm / total, nv_norm / total, u_norm / total, conflict
+def dempster_combine_pair(bba1, bba2):
+    return combine(bba1, bba2, rule="dempster")
+
+
+def compute_per_camera_weights(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    points1: np.ndarray,
+    points2: np.ndarray,
+    conf1: np.ndarray | None,
+    conf2: np.ndarray | None,
+    initial_3d: np.ndarray,
+    *,
+    weights_dst: np.ndarray | None = None,
+    is_outlier: np.ndarray | None = None,
+    reproj_scale: float = 12.0,
+    floor: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute decoupled per-camera weights w1, w2 for DST data loss (Section 3.1)."""
+    n = len(points1)
+    c1 = np.ones(n, dtype=float) if conf1 is None else np.clip(np.asarray(conf1, dtype=float).flatten()[:n], 0.0, 1.0)
+    c2 = np.ones(n, dtype=float) if conf2 is None else np.clip(np.asarray(conf2, dtype=float).flatten()[:n], 0.0, 1.0)
+
+    def _proj_err(p, pts_2d):
+        m, t = p[:, :3], p[:, 3]
+        proj_h = initial_3d @ m.T + t
+        denom = np.maximum(proj_h[:, 2:], 1e-6)
+        return np.linalg.norm((proj_h[:, :2] / denom) - pts_2d, axis=-1)
+
+    try:
+        err1 = _proj_err(p1, points1)
+        err2 = _proj_err(p2, points2)
+    except Exception:
+        err1, err2 = np.zeros(n), np.zeros(n)
+
+    v1_r, nv1_r, u1_r = error_to_bba(err1, scale=reproj_scale)
+    v2_r, nv2_r, u2_r = error_to_bba(err2, scale=reproj_scale)
+
+    v1_d, nv1_d = c1 ** 2, (1.0 - c1) ** 2
+    u1_d = np.clip(1.0 - v1_d - nv1_d, 0.02, 1.0)
+
+    v2_d, nv2_d = c2 ** 2, (1.0 - c2) ** 2
+    u2_d = np.clip(1.0 - v2_d - nv2_d, 0.02, 1.0)
+
+    v1_c, _, u1_c, _ = combine((v1_d, nv1_d, u1_d), (v1_r, nv1_r, u1_r), rule="yager")
+    v2_c, _, u2_c, _ = combine((v2_d, nv2_d, u2_d), (v2_r, nv2_r, u2_r), rule="yager")
+
+    w1 = np.clip(v1_c + 0.3 * u1_c, floor, 1.0)
+    w2 = np.clip(v2_c + 0.3 * u2_c, floor, 1.0)
+
+    if weights_dst is not None:
+        w_scale = np.clip(weights_dst, 0.2, 1.0)
+        w1 = np.clip(w1 * w_scale, floor, 1.0)
+        w2 = np.clip(w2 * w_scale, floor, 1.0)
+
+    if is_outlier is not None:
+        w1 = np.where(is_outlier, np.maximum(w1 * 0.2, floor), w1)
+        w2 = np.where(is_outlier, np.maximum(w2 * 0.2, floor), w2)
+
+    return w1, w2
 
 
 def fuse_evidences(
@@ -326,7 +370,8 @@ def fuse_evidences(
     rule: str = "yager",
     unknown_trust: float = 0.3,
     bone_mode: str = "joint",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return_per_camera: bool = False,
+) -> tuple[np.ndarray, ...]:
     valid_sources = {"detector", "epipolar", "bone"}
     if set(sources) - valid_sources:
         raise ValueError(f"Unsupported fusion sources: {sorted(set(sources) - valid_sources)}")
@@ -390,6 +435,12 @@ def fuse_evidences(
     else:
         weights = np.clip(vf * (1.0 - total_conflict), 0.02, 1.0)
     is_outlier = (total_conflict > conflict_threshold) | (nvf > vf)
+    if return_per_camera:
+        w_cam1, w_cam2 = compute_per_camera_weights(
+            p1, p2, points1, points2, conf_a, conf_b, initial_3d,
+            weights_dst=weights, is_outlier=is_outlier,
+        )
+        return weights, total_conflict, is_outlier, w_cam1, w_cam2
     return weights, total_conflict, is_outlier
 
 

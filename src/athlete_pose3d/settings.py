@@ -95,7 +95,6 @@ class BenchmarkConfig:
     f_scale: str | float = "auto"
     subject_fps: dict[str, str | float] = field(default_factory=dict)
     included_subjects: tuple[str, ...] = ()
-    uncalibrated: bool = False
 
 
 TWOCAM_METHOD = "TwoCam DynamicSync"
@@ -110,7 +109,6 @@ METHOD_LABELS = {
     "dst_anatomical": "DST-Anatomical",
     "physics_refine": "Physics-Refine",
     "dst_physics": "DST+Physics",
-    "uncalibrated_metric": "Uncalibrated Metric Triangulation",
 }
 
 REPORT_HEADERS = [
@@ -178,7 +176,6 @@ def _load_benchmark(raw):
     values.setdefault("fps_mode", "auto")
     values.setdefault("f_scale", "auto")
     values.setdefault("included_subjects", ())
-    values.setdefault("uncalibrated", False)
     values.update(
         triangulation_method=method.get("name"),
         method_options=dict(method.get("options", {})),

@@ -126,7 +126,7 @@ method:
     iterations: 80
     bone_weight: 0.5
     data_weight: 1.0
-    anchor_weight: 0.3
+    anchor_weight: 0.1  # Decoupled DLT anchor ablation {0.3, 0.1, 0.0}
     sym_weight: 0.2
     bone_reliability_modulation: false  # S1 ablation: modulation lowered the measured gain.
     fusion_sources: [detector, epipolar, bone]
@@ -134,6 +134,8 @@ method:
     fusion_rule: yager
     fusion_unknown_trust: 0.3
     fusion_bone_mode: joint
+    init_mode: dlt  # Decoupled initialization {dlt, temporal}
+    hypothesis_selection: false  # Per-joint BetP hypothesis selection
     lr: 1.0
     delta_ray_mm: 5.0
     ground_z: null
