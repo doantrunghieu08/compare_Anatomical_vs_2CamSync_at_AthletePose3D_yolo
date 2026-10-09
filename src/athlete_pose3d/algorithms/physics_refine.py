@@ -126,6 +126,8 @@ def _optimize_biomechanics_step(
     data_weight: float = 0.2,
     delta_ray_mm: float = 5.0,
     sym_tensors: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+    prev_3d: torch.Tensor | None = None,
+    kinematic_weight: float = 0.15,
 ) -> float:
     optimizer.zero_grad()
     dist1_mm = point_to_ray_distance_torch(points_3d, p1, pts1)
@@ -137,6 +139,21 @@ def _optimize_biomechanics_step(
     bone_loss = compute_bone_rigidity_loss(points_3d, bone_lengths, bone_weights)
     sym_loss = compute_symmetry_loss(points_3d, sym_tensors=sym_tensors)
     loss = data_weight * weighted_data + bone_weight * bone_loss + sym_weight * sym_loss
+
+    # ponytail: anatomical kinematic prior (knee/elbow hyperextension + spine column)
+    if kinematic_weight > 0.0:
+        kin_loss = compute_kinematic_prior(points_3d)
+        v_s1 = functional.normalize(points_3d[7] - points_3d[0], dim=-1, eps=1e-6)
+        v_s2 = functional.normalize(points_3d[8] - points_3d[7], dim=-1, eps=1e-6)
+        v_s3 = functional.normalize(points_3d[9] - points_3d[8], dim=-1, eps=1e-6)
+        spine_loss = functional.relu(0.85 - torch.dot(v_s1, v_s2)) ** 2 + functional.relu(0.85 - torch.dot(v_s2, v_s3)) ** 2
+        loss = loss + kinematic_weight * (kin_loss + spine_loss)
+
+    # ponytail: temporal continuity constraint against previous frame
+    if prev_3d is not None:
+        vel_loss = functional.huber_loss(points_3d, prev_3d, reduction="none", delta=35.0).sum(-1)
+        loss = loss + 0.08 * torch.sum(vel_loss)
+
     if anchor_3d is not None and anchor_weights is not None and anchor_weight > 0.0:
         anchor_loss = functional.huber_loss(points_3d, anchor_3d, reduction="none", delta=10.0).sum(-1)
         loss = loss + anchor_weight * torch.sum(anchor_loss * anchor_weights)
@@ -257,6 +274,8 @@ def triangulate_physics_refine(
     sym_weight: float = 0.2, bone_reliability_modulation: bool = False,
     delta_ray_mm: float = 5.0,
     init_3d: np.ndarray | None = None,
+    prev_pose_3d: np.ndarray | None = None,
+    kinematic_weight: float = 0.15,
 ) -> np.ndarray:
     if init_3d is None:
         if weights_dst is not None:
@@ -271,6 +290,11 @@ def triangulate_physics_refine(
     if is_outlier is not None and np.any(is_outlier):
         init_3d = _clamp_outlier_kinematics(init_3d, bone_lengths, is_outlier)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    prev_t = (
+        torch.as_tensor(prev_pose_3d, dtype=torch.float32, device=device)
+        if prev_pose_3d is not None and np.isfinite(prev_pose_3d).all()
+        else None
+    )
     pose, anchor_t, w1_t, w2_t, anchor_w, bone_tensors, sym_tensors = _prepare_optimization_tensors(
         confidence1, confidence2, weights_dst, is_outlier, bone_lengths, init_3d, device,
         bone_reliability_modulation=bone_reliability_modulation,
@@ -286,6 +310,7 @@ def triangulate_physics_refine(
             ground_z, bone_weight=bone_weight, anchor_3d=anchor_t, anchor_weights=anchor_w,
             sym_weight=sym_weight, anchor_weight=anchor_weight,
             data_weight=data_weight, delta_ray_mm=delta_ray_mm, sym_tensors=sym_tensors,
+            prev_3d=prev_t, kinematic_weight=kinematic_weight,
         )
         if np.isfinite(loss) and loss < best_loss:
             best_pose = pose.detach().clone()
@@ -335,13 +360,15 @@ def triangulate_dst_physics(
         bone_reliability_modulation=bone_reliability_modulation,
         delta_ray_mm=delta_ray_mm,
         init_3d=init_3d,
+        prev_pose_3d=prev_pose_3d,
     )
     if hypothesis_selection:
-        # Per-joint BetP / hypothesis selection between DLT and refined DST (Section 3.4)
+        # ponytail: prevent clean DLT joints from drifting in refinement
         out = refined.copy()
         for j in range(len(points1)):
-            if is_outlier[j] or max(w_cam1[j], w_cam2[j]) < 0.3:
-                out[j] = refined[j]
+            if not is_outlier[j] and min(w_cam1[j], w_cam2[j]) > 0.6:
+                if np.linalg.norm(refined[j] - dlt_3d[j]) > 45.0:
+                    out[j] = dlt_3d[j]
         return out
     return refined
 

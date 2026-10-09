@@ -47,15 +47,23 @@ class SystemInfo:
         )
 
 
+def _format_belief_array(arr: np.ndarray | list | None) -> str:
+    """Format keypoint beliefs as a stringified list of floats in [0, 1] rounded to 3 decimals."""
+    if arr is None:
+        return "[]"
+    vals = [round(float(np.clip(v, 0.0, 1.0)), 3) for v in np.asarray(arr, dtype=float).flatten()[:17]]
+    return f"[{', '.join(f'{v:.3f}' for v in vals)}]"
+
+
 def _extract_confidence_and_occlusion(result):
     """Extract per-joint stereo confidence and occlusion status for H36M joints.
     Uses multi-criteria stereo geometry & DST detection if available, falling back
     to 2D confidence thresholding (<= 0.3)."""
     if result.get("occluded_mask") is not None:
         occluded_mask = np.asarray(result["occluded_mask"], dtype=bool).flatten()[:17]
-        ca = np.asarray(result.get("conf_a_h36m", np.ones(17)), dtype=float).flatten()[:17]
-        cb = np.asarray(result.get("conf_b_h36m", np.ones(17)), dtype=float).flatten()[:17]
-        stereo_conf = np.asarray(result.get("stereo_conf_h36m", 0.5 * (ca + cb)), dtype=float).flatten()[:17]
+        ca = np.clip(np.nan_to_num(np.asarray(result.get("belief_master", result.get("conf_a_h36m", np.ones(17))), dtype=float).flatten()[:17], nan=0.0), 0.0, 1.0)
+        cb = np.clip(np.nan_to_num(np.asarray(result.get("belief_slave", result.get("conf_b_h36m", np.ones(17))), dtype=float).flatten()[:17], nan=0.0), 0.0, 1.0)
+        stereo_conf = np.clip(np.nan_to_num(np.asarray(result.get("belief_fusion", result.get("stereo_conf_h36m", 0.5 * (ca + cb))), dtype=float).flatten()[:17], nan=0.0), 0.0, 1.0)
         return ca, cb, stereo_conf, occluded_mask
 
     # If P1, P2, kps2d are available in result, run detect_stereo_occlusions dynamically
@@ -67,17 +75,18 @@ def _extract_confidence_and_occlusion(result):
             from ..algorithms.evidence_fusion import detect_stereo_occlusions
             occ_info = detect_stereo_occlusions(
                 p1, p2, kps_a, kps_b,
-                result.get("conf_a_h36m"), result.get("conf_b_h36m"),
+                result.get("belief_master", result.get("conf_a_h36m")),
+                result.get("belief_slave", result.get("conf_b_h36m")),
                 initial_3d=result.get("recon_3d"),
             )
             return occ_info["conf_a"], occ_info["conf_b"], occ_info["stereo_confidence"], occ_info["occluded_mask"]
         except Exception:
             pass
 
-    ca = result.get("conf_a_h36m")
+    ca = result.get("belief_master", result.get("conf_a_h36m"))
     if ca is None:
         ca = result.get("conf_a")
-    cb = result.get("conf_b_h36m")
+    cb = result.get("belief_slave", result.get("conf_b_h36m"))
     if cb is None:
         cb = result.get("conf_b")
 
@@ -90,13 +99,13 @@ def _extract_confidence_and_occlusion(result):
         if len(cb) < 17:
             pad = np.ones(17 - len(cb))
             cb = np.concatenate([cb, pad])
-        ca = np.nan_to_num(ca[:17], nan=0.0)
-        cb = np.nan_to_num(cb[:17], nan=0.0)
+        ca = np.clip(np.nan_to_num(ca[:17], nan=0.0), 0.0, 1.0)
+        cb = np.clip(np.nan_to_num(cb[:17], nan=0.0), 0.0, 1.0)
     else:
         ca = np.ones(17, dtype=float)
         cb = np.ones(17, dtype=float)
 
-    stereo_conf = 0.5 * (ca + cb)
+    stereo_conf = np.clip(0.5 * (ca + cb), 0.0, 1.0)
     occluded_mask = (ca <= 0.3) | (cb <= 0.3)
     return ca, cb, stereo_conf, occluded_mask
 
@@ -177,6 +186,9 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
         metrics["mpjpe_unoccl"] if not math.isnan(metrics["mpjpe_unoccl"]) else "N/A",
         metrics["mpjpe_occl"] if not math.isnan(metrics["mpjpe_occl"]) else "N/A",
         metrics["num_occl"],
+        _format_belief_array(metrics["ca"]),
+        _format_belief_array(metrics["cb"]),
+        _format_belief_array(metrics["stereo_conf"]),
         str(result["best_method"]),
         int(result.get("global_sync_delta", 0)),
         int(result.get("dynamic_sync_delta", 0)),
@@ -237,6 +249,7 @@ def _build_summary_row(results, system: SystemInfo, version: str):
         d_m_str, d_p_str,
         pa_c_mean, pa_d_mean,
         conf_mean, unoccl_mean, occl_mean, num_occl_mean,
+        "-", "-", "-",
         "AVERAGE", 0, 0,
         system.python_version, system.os_type, system.os_version,
         system.compute_device, str(system.cpu_cores), system.user,

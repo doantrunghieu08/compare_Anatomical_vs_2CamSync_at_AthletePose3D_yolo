@@ -117,6 +117,7 @@ REPORT_HEADERS = [
     "Selected_Method_PA", "Delta_MPJPE_pct", "Delta_PA_pct",
     "PA_Clear", "PA_Derived",
     "Mean_Confidence", "MPJPE_Unoccluded", "MPJPE_Occluded", "Num_Occluded_Joints",
+    "Belief_Master", "Belief_Slave", "Belief_Fusion",
     "Best_Method",
     "Global_Sync_Delta", "Dynamic_Sync_Delta", "Python_Version",
     "OS_Type", "OS_Version", "Compute_Device", "CPU cores",
@@ -143,8 +144,11 @@ def _section(raw, name, schema):
 
 
 def _project_root(config_path):
-    parent = config_path.resolve().parent
-    return parent.parent if parent.name == "configs" else parent
+    resolved = config_path.resolve()
+    for parent in resolved.parents:
+        if parent.name == "configs":
+            return parent.parent
+    return resolved.parent
 
 
 def _load_input(config_path, raw):

@@ -342,14 +342,14 @@ def compute_per_camera_weights(
     w1 = np.clip(v1_c + 0.3 * u1_c, floor, 1.0)
     w2 = np.clip(v2_c + 0.3 * u2_c, floor, 1.0)
 
-    if weights_dst is not None:
-        w_scale = np.clip(weights_dst, 0.2, 1.0)
-        w1 = np.clip(w1 * w_scale, floor, 1.0)
-        w2 = np.clip(w2 * w_scale, floor, 1.0)
+    # ponytail: decouple outlier penalty per camera; each camera penalized only for its own occlusion
+    w1 = np.where(c1 <= 0.3, np.maximum(w1 * 0.2, floor), w1)
+    w2 = np.where(c2 <= 0.3, np.maximum(w2 * 0.2, floor), w2)
 
     if is_outlier is not None:
-        w1 = np.where(is_outlier, np.maximum(w1 * 0.2, floor), w1)
-        w2 = np.where(is_outlier, np.maximum(w2 * 0.2, floor), w2)
+        geom_outlier = np.asarray(is_outlier, dtype=bool) & (c1 > 0.3) & (c2 > 0.3)
+        w1 = np.where(geom_outlier, np.maximum(w1 * 0.5, floor), w1)
+        w2 = np.where(geom_outlier, np.maximum(w2 * 0.5, floor), w2)
 
     return w1, w2
 
@@ -531,11 +531,20 @@ def detect_stereo_occlusions(
             ratio = max(res[j] / max(med_res, 1.0), 1.0) if med_res > 0 else 1.0
             stereo_conf[j] = float(np.clip(0.95 - 0.15 * (ratio - 1.0), 0.70, 0.98))
 
+    # 6. Compute decoupled per-camera weights w1, w2 (Section 3.1)
+    try:
+        w_cam1, w_cam2 = compute_per_camera_weights(
+            p1, p2, pts1, pts2, c1, c2, initial_3d,
+            weights_dst=stereo_conf, is_outlier=occluded_mask,
+        )
+    except Exception:
+        w_cam1, w_cam2 = c1, c2
+
     return {
         "occluded_mask": occluded_mask,
-        "stereo_confidence": stereo_conf,
-        "conf_a": stereo_conf,
-        "conf_b": stereo_conf,
+        "stereo_confidence": np.clip(stereo_conf, 0.0, 1.0),
+        "conf_a": np.clip(w_cam1, 0.0, 1.0),
+        "conf_b": np.clip(w_cam2, 0.0, 1.0),
         "is_outlier": is_out,
         "sampson_res": res,
         "bone_errs": bone_errs,

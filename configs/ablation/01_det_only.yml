@@ -1,40 +1,71 @@
 input:
   dataset_root: inputs
-  pose2d_root: inputs
-  test_set_subdir: data
-  manifest_file: manifest_progress.csv
-  video_extension: .mp4
-  metadata_extension: .json
   ground_truth_extension: .npy
-  pose_2d_suffix: _coco.npy
   key_frames_suffix: _key_frames.npy
-  pose_cache_limit: 550
+  manifest_file: manifest_progress.csv
+  metadata_extension: .json
   minimum_manifest_confidence: 0.6
+  pose2d_root: inputs
+  pose_2d_suffix: _coco.npy
+  pose_cache_limit: 550
+  test_set_subdir: data
+  video_extension: .mp4
+method:
+  name: dst_physics
+  options:
+    anchor_weight: 0.35
+    bone_reliability_modulation: false
+    bone_weight: 0.5
+    data_weight: 1.0
+    delta_ray_mm: 4.0
+    fusion_bone_mode: joint
+    fusion_epi_mode: sampson
+    fusion_rule: yager
+    fusion_sources:
+    - detector
+    fusion_unknown_trust: 0.3
+    ground_z: null
+    hypothesis_selection: true
+    init_mode: dlt
+    iterations: 80
+    lr: 1.0
+    sym_weight: 0.2
+    use_nimble_ik: false
 output:
-  results_csv: outputs/results.csv
   overwrite: false
+  results_csv: outputs/ablation/01_det_only/results.csv
 pipeline:
-  max_pairs: 15
+  bone_prior: sequence_median
+  bone_prior_min_confidence: 0.4
+  bone_prior_min_samples: 5
   chunk_size: 5
-  frames_per_pair: 30
-  sync_max_offset: 45
-  sync_samples: 5
-  sync_coarse_step: 7
-  sync_local_radius: 2
   dynamic_local_radius: 5
-  max_pair_candidates: 132
-  max_dynamic_sync_score: 155.0
-  sync_minimum_joint_confidence: 0.25
-  sync_minimum_valid_joints: 8
-  minimum_pair_valid_ratio: 0.5
   dynamic_transition_weight: 7.5
+  excluded_motions: []
+  excluded_subjects: []
+  fps_mode: auto
+  frames_per_pair: 30
+  max_dynamic_sync_score: 155.0
+  max_pair_candidates: 132
+  max_pairs: 15
   minimum_joint_confidence: 0.3
+  minimum_pair_valid_ratio: 0.5
   minimum_valid_joints: 8
-  subject_height_mm: auto
-  subject_heights:
-    S1: 1591.0
-    S2: 1553.0
-    S3: 1733.0
+  reference_fps: 60.0
+  sequence_refinement:
+    bone_weight: 0.7
+    data_weight: 0.34
+    enabled: true
+    max_drift: 360.0
+    max_evaluations: 30
+    reprojection_weight: 0.46
+    root_weight: 0.8
+    smoothness_weight: 0.06
+    symmetry_weight: 0.12
+  subject_fps:
+    S1: auto
+    S2: auto
+    S3: auto
   subject_gt_joint_markers:
     S1:
       0:
@@ -157,45 +188,14 @@ pipeline:
       16:
       - R_Lateral Wrist
       - R_Medial Wrist
-  reference_fps: 60.0
-  fps_mode: auto
-  subject_fps:
-    S1: auto
-    S2: auto
-    S3: auto
-  excluded_subjects: []
-  excluded_motions: []
-  bone_prior: sequence_median
-  bone_prior_min_samples: 5
-  bone_prior_min_confidence: 0.4
-  sequence_refinement:
-    enabled: true
-    data_weight: 0.34
-    root_weight: 0.8
-    bone_weight: 0.7
-    reprojection_weight: 0.46
-    smoothness_weight: 0.06
-    symmetry_weight: 0.12
-    max_evaluations: 30
-    max_drift: 360.0
-method:
-  name: dst_physics
-  options:
-    iterations: 80
-    bone_weight: 0.5
-    data_weight: 1.0
-    anchor_weight: 0.35
-    sym_weight: 0.2
-    bone_reliability_modulation: false
-    fusion_sources:
-    - bone
-    fusion_epi_mode: sampson
-    fusion_rule: yager
-    fusion_unknown_trust: 0.3
-    fusion_bone_mode: joint
-    init_mode: dlt
-    hypothesis_selection: true
-    lr: 1.0
-    delta_ray_mm: 4.0
-    ground_z: null
-    use_nimble_ik: false
+  subject_height_mm: auto
+  subject_heights:
+    S1: 1591.0
+    S2: 1553.0
+    S3: 1733.0
+  sync_coarse_step: 7
+  sync_local_radius: 2
+  sync_max_offset: 45
+  sync_minimum_joint_confidence: 0.25
+  sync_minimum_valid_joints: 8
+  sync_samples: 5

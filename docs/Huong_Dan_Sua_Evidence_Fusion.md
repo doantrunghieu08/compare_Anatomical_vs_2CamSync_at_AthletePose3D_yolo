@@ -1,3 +1,5 @@
+       
+
 # Hướng dẫn sửa `evidence_fusion.py` (thay và bổ sung bằng chứng cho DST)
 
 Tài liệu này hướng dẫn sửa theo từng bước, có kiểm tra sau mỗi bước, để bạn biết thay đổi nào thật sự giúp ích. Chữ ký trả về của `fuse_evidences` giữ nguyên `(weights, total_conflict, is_outlier)` nên `physics_refine.py` không phải sửa.
@@ -13,14 +15,14 @@ Tài liệu này hướng dẫn sửa theo từng bước, có kiểm tra sau m�
 
 ## 1. Các vấn đề trong code hiện tại (tại sao cần sửa)
 
-| # | Vấn đề | Hậu quả |
-|---|---|---|
-| 1 | `_joint_bone_error` trả `0.0` khi khớp không có xương nối hoặc thiếu key trong `bone_lengths` (ví dụ key lưu theo chiều `(b, a)`) | `err = 0` nên `m_v = 0.8`: thiếu thông tin lại thành tin tưởng cao |
-| 2 | `compute_epipolar_bba` đo khoảng cách tia bằng mm, phụ thuộc độ sâu và scale metric (scale lại lấy từ bone prior) | `sigma_mm = 60` lệch khi người đứng xa hoặc scale sai |
-| 3 | Bone error của một xương được chia đều cho cả hai đầu | Một khớp sai làm các khớp kề nó đúng cũng bị giảm bằng chứng |
-| 4 | `fuse_evidences` bỏ phần `u` (không biết) sau khi kết hợp, chỉ dùng `vf` | Mất thông tin về độ bất định |
-| 5 | Dempster đã chuẩn hóa để loại xung đột, rồi `weights = vf * (1 - total_conflict)` phạt thêm lần nữa | Phạt xung đột hai lần (có thể cố ý, nhưng cần ablation) |
-| 6 | Bone đo trên `initial_3d` dựng từ chính các tia dùng cho epipolar | Hai nguồn không độc lập; việc lấy trung bình thay vì Dempster là hợp lý, giữ nguyên |
+| # | Vấn đề                                                                                                                                              | Hậu quả                                                                                         |
+| - | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| 1 | `_joint_bone_error` trả `0.0` khi khớp không có xương nối hoặc thiếu key trong `bone_lengths` (ví dụ key lưu theo chiều `(b, a)`) | `err = 0` nên `m_v = 0.8`: thiếu thông tin lại thành tin tưởng cao                     |
+| 2 | `compute_epipolar_bba` đo khoảng cách tia bằng mm, phụ thuộc độ sâu và scale metric (scale lại lấy từ bone prior)                       | `sigma_mm = 60` lệch khi người đứng xa hoặc scale sai                                     |
+| 3 | Bone error của một xương được chia đều cho cả hai đầu                                                                                      | Một khớp sai làm các khớp kề nó đúng cũng bị giảm bằng chứng                        |
+| 4 | `fuse_evidences` bỏ phần `u` (không biết) sau khi kết hợp, chỉ dùng `vf`                                                                 | Mất thông tin về độ bất định                                                              |
+| 5 | Dempster đã chuẩn hóa để loại xung đột, rồi`weights = vf * (1 - total_conflict)` phạt thêm lần nữa                                     | Phạt xung đột hai lần (có thể cố ý, nhưng cần ablation)                                 |
+| 6 | Bone đo trên`initial_3d` dựng từ chính các tia dùng cho epipolar                                                                              | Hai nguồn không độc lập; việc lấy trung bình thay vì Dempster là hợp lý, giữ nguyên |
 
 ## 2. Các bước sửa
 
@@ -228,6 +230,7 @@ Tôi chưa thấy `pipeline.py` và `settings.py`, nên đây là hướng chung
                   rule=cfg.fusion_rule, unknown_trust=cfg.fusion_unknown_trust,
                   temporal=temporal_args)
    ```
+
    `temporal_args` là `None` mặc định. Chỉ dựng nó khi đang xử lý frame liên tiếp và nguồn `temporal` bật.
 4. **Biến thể A cần chạy lại bản cũ.** Cách đơn giản nhất: giữ `evidence_fusion_backup.py` và chạy A từ file backup, hoặc thêm `bone_mode: legacy` gọi `compute_bone_bba_legacy`.
 
@@ -263,14 +266,14 @@ Nếu mục 4 cho thấy `weights` gần như luôn bằng 0.02 hoặc luôn b�
 
 Chạy trên cùng sequence, cặp camera, tập frame GT hợp lệ, tắt sequence refinement khi so sánh nguồn bằng chứng.
 
-| Biến thể | Cấu hình |
-|---|---|
-| A (baseline) | `epi_mode="ray_mm"`, `rule="dempster"`, bone legacy |
-| B | A + bone mới (sửa vấn đề 1, 3) |
-| C | B + `epi_mode="sampson"` + discount góc tam giác |
-| D | C + `rule="yager"` |
-| E | D + `sources` thêm `"temporal"` |
-| Leave-one-out | từ biến thể tốt nhất, bỏ lần lượt `detector`, `epipolar`, `bone`, `temporal` |
+| Biến thể    | Cấu hình                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| A (baseline)  | `epi_mode="ray_mm"`, `rule="dempster"`, bone legacy                                      |
+| B             | A + bone mới (sửa vấn đề 1, 3)                                                          |
+| C             | B +`epi_mode="sampson"` + discount góc tam giác                                          |
+| D             | C +`rule="yager"`                                                                          |
+| E             | D +`sources` thêm `"temporal"`                                                          |
+| Leave-one-out | từ biến thể tốt nhất, bỏ lần lượt`detector`, `epipolar`, `bone`, `temporal` |
 
 Với mỗi biến thể ghi: MPJPE, PA-MPJPE, số frame hợp lệ, tỷ lệ khớp bị đánh outlier, và so với DLT trên cùng frame. Cách đọc:
 
@@ -281,14 +284,14 @@ Với mỗi biến thể ghi: MPJPE, PA-MPJPE, số frame hợp lệ, tỷ lệ 
 
 ## 6. Tham số cần chỉnh và triệu chứng
 
-| Tham số | Giá trị khởi đầu | Triệu chứng cần chỉnh |
-|---|---|---|
-| `sigma_px` (Sampson) | `max(2, 0.015 × chiều cao người trong ảnh)` | Hầu hết khớp có `v ≈ 0`: tăng. Mọi khớp đều `v` cao kể cả khớp sai: giảm |
-| `full_deg` (góc tam giác) | 15° | Nếu cặp camera chọn thường có góc nhỏ, discount làm yếu toàn bộ epipolar: giảm `full_deg` hoặc nâng `floor` |
-| `tolerance` (bone) | 0.22 | Hệ số 22% dung sai độ dài xương; giảm nếu bone prior đáng tin |
-| `unknown_trust` (Yager) | 0.3 | Quét 0.0, 0.2, 0.3, 0.5 |
-| `conflict_threshold` | 0.65 | Quét 0.5–0.8, theo dõi tỷ lệ outlier |
-| sigma temporal | `0.02 × chiều cao người` | Chuyển động nhanh làm nhiều khớp bị phạt oan: tăng |
+| Tham số                      | Giá trị khởi đầu                              | Triệu chứng cần chỉnh                                                                                                     |
+| ----------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `sigma_px` (Sampson)        | `max(2, 0.015 × chiều cao người trong ảnh)` | Hầu hết khớp có`v ≈ 0`: tăng. Mọi khớp đều `v` cao kể cả khớp sai: giảm                                     |
+| `full_deg` (góc tam giác) | 15°                                               | Nếu cặp camera chọn thường có góc nhỏ, discount làm yếu toàn bộ epipolar: giảm`full_deg` hoặc nâng `floor` |
+| `tolerance` (bone)          | 0.22                                               | Hệ số 22% dung sai độ dài xương; giảm nếu bone prior đáng tin                                                      |
+| `unknown_trust` (Yager)     | 0.3                                                | Quét 0.0, 0.2, 0.3, 0.5                                                                                                      |
+| `conflict_threshold`        | 0.65                                               | Quét 0.5–0.8, theo dõi tỷ lệ outlier                                                                                     |
+| sigma temporal                | `0.02 × chiều cao người`                     | Chuyển động nhanh làm nhiều khớp bị phạt oan: tăng                                                                   |
 
 ## 7. Hạn chế cần nhớ
 
