@@ -28,15 +28,12 @@ KINEMATIC_PARENT = {
 EVAL_ORDER = [7, 8, 9, 10, 1, 4, 14, 11, 2, 5, 15, 12, 3, 6, 16, 13]
 
 
-def is_nimble_available() -> bool:
-    return HAS_NIMBLE
-
-
 def compute_ground_contact_loss(
     points_3d: torch.Tensor,
     ground_z: float = 0.0,
     margin: float = 5.0,
 ) -> torch.Tensor:
+    # ponytail: ground_z assumes world-frame vertical coordinate (Z-up), ground_z=None by default
     left_ankle_z = points_3d[..., 6, 2]
     right_ankle_z = points_3d[..., 3, 2]
     penalty_left = functional.relu(ground_z - left_ankle_z - margin) ** 2
@@ -278,14 +275,10 @@ def triangulate_physics_refine(
     kinematic_weight: float = 0.15,
 ) -> np.ndarray:
     if init_3d is None:
-        if weights_dst is not None:
-            from .evidence_fusion import triangulate_ray_midpoint
-            init_3d = triangulate_ray_midpoint(p1, p2, points1, points2)
-        else:
-            from .geometry import triangulate_dlt
-            init_3d = triangulate_dlt(p1, p2, points1, points2)
+        from .geometry import triangulate_dlt
+        init_3d = triangulate_dlt(p1, p2, points1, points2)
     if use_nimble_ik and HAS_NIMBLE:
-        return fit_skeleton_nimble(init_3d, weights=weights_dst, max_steps=min(iterations, 50))
+        return fit_skeleton_nimble(init_3d, max_steps=min(iterations, 50))
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
     if is_outlier is not None and np.any(is_outlier):
         init_3d = _clamp_outlier_kinematics(init_3d, bone_lengths, is_outlier)
@@ -305,6 +298,7 @@ def triangulate_physics_refine(
     optimizer = torch.optim.Adam([pose], lr=lr)
     best_pose, best_loss = pose.detach().clone(), float("inf")
     for _ in range(iterations):
+        candidate = pose.detach().clone()
         loss = _optimize_biomechanics_step(
             pose, optimizer, p1_t, p2_t, pts1_t, pts2_t, w1_t, w2_t, bone_tensors,
             ground_z, bone_weight=bone_weight, anchor_3d=anchor_t, anchor_weights=anchor_w,
@@ -313,62 +307,9 @@ def triangulate_physics_refine(
             prev_3d=prev_t, kinematic_weight=kinematic_weight,
         )
         if np.isfinite(loss) and loss < best_loss:
-            best_pose = pose.detach().clone()
+            best_pose = candidate
             best_loss = loss
     result = best_pose.cpu().numpy()
     return result if np.isfinite(result).all() else init_3d
 
-
-def triangulate_dst_physics(
-    p1: np.ndarray, p2: np.ndarray, points1: np.ndarray, points2: np.ndarray,
-    confidence1: np.ndarray, confidence2: np.ndarray, *,
-    bone_lengths: dict | None = None, bone_weight: float = 1.0,
-    iterations: int = 60, ground_z: float | None = None, lr: float = 1.0,
-    use_nimble_ik: bool = False, data_weight: float = 0.2, anchor_weight: float = 0.1,
-    sym_weight: float = 0.2, bone_reliability_modulation: bool = False,
-    delta_ray_mm: float = 5.0,
-    fusion_sources: tuple[str, ...] | list[str] = ("detector", "epipolar", "bone"),
-    fusion_epi_mode: str = "sampson", fusion_rule: str = "yager",
-    fusion_unknown_trust: float = 0.3, fusion_bone_mode: str = "joint",
-    init_mode: str = "dlt", prev_pose_3d: np.ndarray | None = None,
-    hypothesis_selection: bool = False,
-) -> np.ndarray:
-    from .evidence_fusion import fuse_evidences
-    from .geometry import triangulate_dlt
-    bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
-    dlt_3d = triangulate_dlt(p1, p2, points1, points2)
-    if init_mode == "temporal" and prev_pose_3d is not None and np.isfinite(prev_pose_3d).all():
-        init_3d = prev_pose_3d.copy()
-    else:
-        init_3d = dlt_3d
-
-    weights_dst, _, is_outlier, w_cam1, w_cam2 = fuse_evidences(
-        confidence1, confidence2, p1, p2, points1, points2, bone_lengths,
-        initial_3d=init_3d,
-        sources=fusion_sources, epi_mode=fusion_epi_mode, rule=fusion_rule,
-        unknown_trust=fusion_unknown_trust, bone_mode=fusion_bone_mode,
-        return_per_camera=True,
-    )
-    refined = triangulate_physics_refine(
-        p1, p2, points1, points2, confidence1, confidence2,
-        bone_lengths=bone_lengths, bone_weight=bone_weight,
-        weights_dst=weights_dst, is_outlier=is_outlier,
-        weights_cam1=w_cam1, weights_cam2=w_cam2,
-        iterations=iterations, ground_z=ground_z, lr=lr,
-        use_nimble_ik=use_nimble_ik, data_weight=data_weight,
-        anchor_weight=anchor_weight, sym_weight=sym_weight,
-        bone_reliability_modulation=bone_reliability_modulation,
-        delta_ray_mm=delta_ray_mm,
-        init_3d=init_3d,
-        prev_pose_3d=prev_pose_3d,
-    )
-    if hypothesis_selection:
-        # ponytail: prevent clean DLT joints from drifting in refinement
-        out = refined.copy()
-        for j in range(len(points1)):
-            if not is_outlier[j] and min(w_cam1[j], w_cam2[j]) > 0.6:
-                if np.linalg.norm(refined[j] - dlt_3d[j]) > 45.0:
-                    out[j] = dlt_3d[j]
-        return out
-    return refined
 

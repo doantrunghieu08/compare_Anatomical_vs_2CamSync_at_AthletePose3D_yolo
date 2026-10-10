@@ -20,7 +20,7 @@ pipeline:
   sync_max_offset: 45
   sync_samples: 5
   sync_coarse_step: 7
-  sync_local_radius: 2
+  sync_local_radius: 0
   dynamic_local_radius: 5
   max_pair_candidates: 132
   max_dynamic_sync_score: 155.0
@@ -165,7 +165,7 @@ pipeline:
     S3: auto
   excluded_subjects: []
   excluded_motions: []
-  bone_prior: sequence_median
+  bone_prior: h36m
   bone_prior_min_samples: 5
   bone_prior_min_confidence: 0.4
   sequence_refinement:
@@ -174,28 +174,15 @@ pipeline:
     root_weight: 0.8
     bone_weight: 0.7
     reprojection_weight: 0.46
-    smoothness_weight: 0.06
+    smoothness_weight: 0.15
+    velocity_weight: 0.03
     symmetry_weight: 0.12
     max_evaluations: 30
     max_drift: 360.0
 method:
-  name: dst_physics
+  # ponytail: stripped DST, keeping only DLT + bone-prior + height + bone length constraints
+  name: anatomical
   options:
     iterations: 80
-    bone_weight: 0.5
-    data_weight: 1.0
-    anchor_weight: 0.35
-    sym_weight: 0.2
-    bone_reliability_modulation: false
-    fusion_sources:
-    - bone
-    fusion_epi_mode: sampson
-    fusion_rule: yager
-    fusion_unknown_trust: 0.3
-    fusion_bone_mode: joint
-    init_mode: dlt
-    hypothesis_selection: true
-    lr: 1.0
-    delta_ray_mm: 4.0
-    ground_z: null
-    use_nimble_ik: false
+    bone_weight: 1.0
+

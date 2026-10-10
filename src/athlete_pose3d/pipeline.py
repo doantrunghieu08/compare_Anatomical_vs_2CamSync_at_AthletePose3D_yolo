@@ -18,13 +18,12 @@ from .algorithms.geometry import (
     triangulate_anatomical,
     triangulate_conf_algebraic,
     triangulate_dlt,
-    triangulate_dst_anatomical,
     triangulate_iterative,
     triangulate_ransac,
+    detect_stereo_occlusions,
 )
 
-from .algorithms.evidence_fusion import detect_stereo_occlusions
-from .algorithms.physics_refine import triangulate_dst_physics, triangulate_physics_refine
+from .algorithms.physics_refine import triangulate_physics_refine
 from .algorithms.refinement import refine_results
 from .algorithms.synchronization import estimate_dynamic_offsets, select_best_pair, select_synced_pose
 from .io.data import PoseRepository, extract_gt_3d, load_json
@@ -35,7 +34,9 @@ from .settings import BenchmarkConfig, method_label
 def _sample_key_frames(frames: list[int], limit: int) -> list[int]:
     if limit <= 0 or len(frames) <= limit:
         return frames
-    return [frames[index] for index in np.linspace(0, len(frames) - 1, limit, dtype=int)]
+    # ponytail: contiguous center window to preserve temporal continuity
+    start = max(0, (len(frames) - limit) // 2)
+    return frames[start : start + limit]
 
 
 def _sync_score_options(config, subject=None):
@@ -44,24 +45,21 @@ def _sync_score_options(config, subject=None):
         "bone_lengths": h36m_bone_lengths_from_height(height),
         "minimum_confidence": config.sync_minimum_joint_confidence,
         "minimum_valid_joints": config.sync_minimum_valid_joints,
+        "f_scale": getattr(config, "f_scale", "auto"),
     }
 
 
 def _make_triangulation_function(method, options, config, bone_lens=None):
     if bone_lens is None:
-        bone_lens = h36m_bone_lengths_from_height(config.subject_height_mm)
+        height = resolve_subject_height("", config.subject_height_mm, config.subject_heights)
+        bone_lens = h36m_bone_lengths_from_height(height)
     opts = dict(options)
-    if method == "dst_physics":
-        bone_w = opts.pop("bone_weight", 1.0)
-        return partial(triangulate_dst_physics, bone_lengths=bone_lens, bone_weight=bone_w, **opts)
-    if method == "dst_anatomical":
-        bone_w = opts.pop("bone_weight", 1.0)
-        return partial(triangulate_dst_anatomical, bone_lengths=bone_lens, bone_weight=bone_w, **opts)
     if method == "physics_refine":
         bone_w = opts.pop("bone_weight", 1.0)
         return partial(triangulate_physics_refine, bone_lengths=bone_lens, bone_weight=bone_w, **opts)
     if method == "anatomical":
-        return partial(triangulate_anatomical, bone_lengths=bone_lens, bone_weight=opts.pop("bone_weight"), **opts)
+        bone_w = opts.pop("bone_weight", 1.0)
+        return partial(triangulate_anatomical, bone_lengths=bone_lens, bone_weight=bone_w, **opts)
     simple = {
         "dlt": triangulate_dlt,
         "confidence_algebraic": triangulate_conf_algebraic,
@@ -91,28 +89,6 @@ def _validate_method_options(method: str, options: dict) -> None:
             raise ValueError(f"Option 'bone_reliability_modulation' must be a boolean, got {type(val).__name__}")
     if "use_nimble_ik" in options and not isinstance(options["use_nimble_ik"], bool):
         raise ValueError("Option 'use_nimble_ik' must be a boolean")
-    if "fusion_sources" in options:
-        sources = options["fusion_sources"]
-        if (
-            not isinstance(sources, (list, tuple))
-            or any(not isinstance(source, str) for source in sources)
-            or set(sources) - {"detector", "epipolar", "bone"}
-        ):
-            raise ValueError("Option 'fusion_sources' must contain detector, epipolar, and/or bone")
-    epi_mode = options.get("fusion_epi_mode", "sampson")
-    if not isinstance(epi_mode, str) or epi_mode not in {"sampson", "ray_mm"}:
-        raise ValueError("Option 'fusion_epi_mode' must be 'sampson' or 'ray_mm'")
-    fusion_rule = options.get("fusion_rule", "yager")
-    if not isinstance(fusion_rule, str) or fusion_rule not in {"yager", "dempster"}:
-        raise ValueError("Option 'fusion_rule' must be 'yager' or 'dempster'")
-    bone_mode = options.get("fusion_bone_mode", "joint")
-    if not isinstance(bone_mode, str) or bone_mode not in {"joint", "legacy"}:
-        raise ValueError("Option 'fusion_bone_mode' must be 'joint' or 'legacy'")
-    if "fusion_unknown_trust" in options:
-        val = options["fusion_unknown_trust"]
-        if isinstance(val, bool) or not isinstance(val, (int, float)) or not 0 <= val <= 1:
-            raise ValueError("Option 'fusion_unknown_trust' must be between zero and one")
-
 
 def _selected_triangulation(config: BenchmarkConfig):
     method = config.triangulation_method
@@ -123,16 +99,9 @@ def _selected_triangulation(config: BenchmarkConfig):
         "ransac_dlt": {"reprojection_threshold"},
         "iterative_refine": {"iterations"},
         "anatomical": {"iterations", "bone_weight"},
-        "dst_anatomical": {"iterations", "bone_weight", "conflict_threshold", "init_mode"},
         "physics_refine": {
             "iterations", "bone_weight", "ground_z", "lr", "use_nimble_ik",
             "data_weight", "anchor_weight", "sym_weight", "bone_reliability_modulation", "delta_ray_mm",
-        },
-        "dst_physics": {
-            "iterations", "bone_weight", "ground_z", "lr", "use_nimble_ik",
-            "data_weight", "anchor_weight", "sym_weight", "bone_reliability_modulation", "delta_ray_mm",
-            "fusion_sources", "fusion_epi_mode", "fusion_rule", "fusion_unknown_trust", "fusion_bone_mode",
-            "init_mode", "hypothesis_selection",
         },
     }
     label = method_label(method)
@@ -295,7 +264,7 @@ def _frame_inputs(context, frame, repository, config):
     ground_truth = extract_gt_3d(
         context["raw_gt"], context["marker_names"], frame, context["joint_markers"]
     )
-    if ground_truth is None:
+    if ground_truth is None or not np.isfinite(ground_truth).all():
         return None
     return left, right, dynamic_offset, local_offset, sync_score, dynamic_score, ground_truth
 
@@ -455,11 +424,11 @@ def run_benchmark_chunk(multicam_pairs, repository, config, valid_videos=None):
     if not results or not refinement.pop("enabled"):
         return results
     source_method = method_label(config.triangulation_method)
-    bone_lengths = h36m_bone_lengths_from_height(config.subject_height_mm)
     return refine_results(
         results,
         source_method=source_method,
         target_method=f"{source_method} + SequenceRefine",
-        bone_lengths=bone_lengths,
+        subject_heights=config.subject_heights,
+        subject_height_mm=config.subject_height_mm,
         **refinement,
     )

@@ -106,9 +106,7 @@ METHOD_LABELS = {
     "ransac_dlt": "RANSAC-DLT",
     "iterative_refine": "Iterative Refine",
     "anatomical": "Anatomical (SOTA)",
-    "dst_anatomical": "DST-Anatomical",
     "physics_refine": "Physics-Refine",
-    "dst_physics": "DST+Physics",
 }
 
 REPORT_HEADERS = [
@@ -173,6 +171,7 @@ def _load_output(config_path, raw):
 def _load_benchmark(raw):
     values = dict(raw.get("pipeline", {}))
     method, refinement = raw.get("method", {}), values.pop("sequence_refinement", {})
+    refinement.setdefault("velocity_weight", 0.0)
     values.setdefault("subject_heights", {})
     values.setdefault("subject_gt_joint_markers", {})
     values.setdefault("subject_fps", {})
@@ -233,7 +232,7 @@ def _validate(inputs, config):
         raise ValueError("bone_prior_min_confidence must be between zero and one")
     required_refinement = {
         "enabled", "data_weight", "root_weight", "bone_weight", "reprojection_weight",
-        "smoothness_weight", "symmetry_weight", "max_evaluations", "max_drift",
+        "smoothness_weight", "velocity_weight", "symmetry_weight", "max_evaluations", "max_drift",
     }
     if required_refinement != config.sequence_refinement.keys():
         raise ValueError("pipeline.sequence_refinement has missing or unknown options")

@@ -188,8 +188,6 @@ def resolve_subject_height(
     subject_heights: dict[str, float] | None = None,
     sample_poses: list[np.ndarray] | None = None,
 ) -> float:
-    if subject_heights and subject in subject_heights:
-        return float(subject_heights[subject])
     if isinstance(configured_height, (int, float)) and configured_height > 0:
         return float(configured_height)
     if isinstance(configured_height, str) and configured_height.lower() != "auto":
@@ -197,6 +195,8 @@ def resolve_subject_height(
             return float(configured_height)
         except ValueError:
             pass
+    if subject_heights and subject in subject_heights:
+        return float(subject_heights[subject])
     if sample_poses:
         valid_heights = [estimate_subject_height(p) for p in sample_poses if np.isfinite(p).all()]
         if valid_heights:
@@ -288,9 +288,9 @@ def compute_kinematic_prior(points_3d: torch.Tensor, margin=0.05) -> torch.Tenso
     hip_axis = normalize(points_3d[1] - points_3d[4])
     shoulder_axis = normalize(points_3d[14] - points_3d[11])
     limbs = (
-        (2, 1, 3, 2, hip_axis, -1),
+        (2, 1, 3, 2, hip_axis, 1),
         (5, 4, 6, 5, hip_axis, 1),
-        (15, 14, 16, 15, shoulder_axis, 1),
+        (15, 14, 16, 15, shoulder_axis, -1),
         (12, 11, 13, 12, shoulder_axis, -1),
     )
     loss = points_3d.new_tensor(0.0)
@@ -300,6 +300,16 @@ def compute_kinematic_prior(points_3d: torch.Tensor, margin=0.05) -> torch.Tenso
         bend = torch.dot(torch.linalg.cross(first, second, dim=-1), axis)
         loss = loss + torch.relu(sign * bend - margin) ** 2
     return loss
+
+
+def _camera_rays(p_mat: torch.Tensor, pts_2d: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    m = p_mat[:, :3]
+    m_inv = torch.linalg.inv(m)
+    c = -m_inv @ p_mat[:, 3]
+    ones = torch.ones((len(pts_2d), 1), dtype=pts_2d.dtype, device=pts_2d.device)
+    rays = (m_inv @ torch.cat([pts_2d, ones], dim=-1).T).T
+    dirs = rays / torch.linalg.vector_norm(rays, dim=-1, keepdim=True)
+    return c, dirs
 
 
 def _anatomical_step(
@@ -313,17 +323,25 @@ def _anatomical_step(
     c2_t: torch.Tensor,
     bone_lengths: dict | tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     bone_weight: float,
-) -> None:
+    rays_precomputed: tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]] | None = None,
+) -> float:
     optimizer.zero_grad()
-    dist1 = point_to_ray_distance_torch(points_3d, p1_t, pts1_t)
-    dist2 = point_to_ray_distance_torch(points_3d, p2_t, pts2_t)
+    if rays_precomputed is not None:
+        (c1, d1), (c2, d2) = rays_precomputed
+        diff1 = points_3d - c1
+        diff2 = points_3d - c2
+        dist1 = torch.linalg.vector_norm(diff1 - torch.sum(diff1 * d1, dim=-1, keepdim=True) * d1, dim=-1)
+        dist2 = torch.linalg.vector_norm(diff2 - torch.sum(diff2 * d2, dim=-1, keepdim=True) * d2, dim=-1)
+    else:
+        dist1 = point_to_ray_distance_torch(points_3d, p1_t, pts1_t)
+        dist2 = point_to_ray_distance_torch(points_3d, p2_t, pts2_t)
     loss1 = functional.huber_loss(dist1, torch.zeros_like(dist1), reduction="none", delta=5.0)
     loss2 = functional.huber_loss(dist2, torch.zeros_like(dist2), reduction="none", delta=5.0)
     if isinstance(bone_lengths, tuple):
         b_idx_a, b_idx_b, b_targets = bone_lengths
         if len(b_idx_a) > 0:
             actuals = torch.linalg.vector_norm(points_3d[b_idx_a] - points_3d[b_idx_b], dim=-1)
-            bone_loss = torch.sum((actuals - b_targets) ** 2)
+            bone_loss = torch.sum(functional.huber_loss(actuals, b_targets, reduction="none", delta=10.0))
         else:
             bone_loss = points_3d.new_tensor(0.0)
     else:
@@ -333,12 +351,13 @@ def _anatomical_step(
             idx_b = [v[1] for v in valid]
             targets = points_3d.new_tensor([v[2] for v in valid])
             actuals = torch.linalg.vector_norm(points_3d[idx_a] - points_3d[idx_b], dim=-1)
-            bone_loss = torch.sum((actuals - targets) ** 2)
+            bone_loss = torch.sum(functional.huber_loss(actuals, targets, reduction="none", delta=10.0))
         else:
             bone_loss = points_3d.new_tensor(0.0)
     loss = torch.sum(loss1 * c1_t) + torch.sum(loss2 * c2_t) + bone_weight * bone_loss
     loss.backward()
     optimizer.step()
+    return float(loss.item())
 
 
 def triangulate_anatomical(
@@ -352,17 +371,18 @@ def triangulate_anatomical(
     bone_lengths=None,
     bone_weight=1.0,
     iterations=80,
+    **_kwargs,
 ):
+    init_3d = triangulate_dlt(p1, p2, points1, points2)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    points_3d = torch.tensor(
-        triangulate_dlt(p1, p2, points1, points2), dtype=torch.float32, device=device, requires_grad=True
-    )
+    points_3d = torch.tensor(init_3d, dtype=torch.float32, device=device, requires_grad=True)
     p1_t, p2_t = (torch.as_tensor(value, dtype=torch.float32, device=device) for value in (p1, p2))
     pts1_t, pts2_t = (torch.as_tensor(value, dtype=torch.float32, device=device) for value in (points1, points2))
     c1_t, c2_t = (
         torch.as_tensor(np.clip(value, 0.0, 1.0) ** 2, dtype=torch.float32, device=device)
         for value in (confidence1, confidence2)
     )
+    rays_pre = (_camera_rays(p1_t, pts1_t), _camera_rays(p2_t, pts2_t))
     optimizer = torch.optim.Adam([points_3d], lr=0.1)
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
     valid_bones = [(a, b, l) for (a, b), l in bone_lengths.items() if l > 0]
@@ -370,70 +390,119 @@ def triangulate_anatomical(
     b_idx_b = torch.tensor([v[1] for v in valid_bones], dtype=torch.long, device=device)
     b_targets = torch.tensor([v[2] for v in valid_bones], dtype=torch.float32, device=device)
     bone_tensors = (b_idx_a, b_idx_b, b_targets)
+
+    best_pose, best_loss = points_3d.detach().clone(), float("inf")
     for _ in range(iterations):
-        _anatomical_step(points_3d, optimizer, p1_t, p2_t, pts1_t, pts2_t, c1_t, c2_t, bone_tensors, bone_weight)
-    return points_3d.detach().cpu().numpy()
+        candidate = points_3d.detach().clone()
+        loss_val = _anatomical_step(
+            points_3d, optimizer, p1_t, p2_t, pts1_t, pts2_t, c1_t, c2_t,
+            bone_tensors, bone_weight, rays_precomputed=rays_pre,
+        )
+        if np.isfinite(loss_val) and loss_val < best_loss:
+            best_pose = candidate
+            best_loss = loss_val
+
+    res = best_pose.detach().cpu().numpy()
+    return res if np.isfinite(res).all() else init_3d
 
 
-def triangulate_dst_anatomical(
-    p1,
-    p2,
-    points1,
-    points2,
-    confidence1,
-    confidence2,
-    *,
-    bone_lengths=None,
-    bone_weight=1.0,
-    iterations=80,
-    conflict_threshold=0.65,
-    init_mode="dlt",
-    prev_pose_3d=None,
-):
-    from .evidence_fusion import fuse_evidences, triangulate_ray_midpoint
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
-    if init_mode == "temporal" and prev_pose_3d is not None and np.isfinite(prev_pose_3d).all():
-        init_3d = prev_pose_3d.copy()
-    else:
-        init_3d = triangulate_ray_midpoint(p1, p2, points1, points2)
-    weights_dst, _, is_outlier, w_cam1, w_cam2 = fuse_evidences(
-        confidence1, confidence2, p1, p2, points1, points2, bone_lengths,
-        initial_3d=init_3d, conflict_threshold=conflict_threshold,
-        return_per_camera=True,
+def fundamental_from_projections(p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
+    """Compute F such that x2.T @ F @ x1 = 0 from two 3x4 projections."""
+    p1, p2 = np.asarray(p1, dtype=float), np.asarray(p2, dtype=float)
+    if p1.shape != (3, 4) or p2.shape != (3, 4):
+        raise ValueError("projection matrices must have shape (3, 4)")
+    camera1 = np.linalg.svd(p1)[2][-1]
+    epipole2 = p2 @ camera1
+    ex = np.array(
+        [
+            [0.0, -epipole2[2], epipole2[1]],
+            [epipole2[2], 0.0, -epipole2[0]],
+            [-epipole2[1], epipole2[0], 0.0],
+        ]
     )
-    points_3d = torch.tensor(
-        init_3d, dtype=torch.float32, device=device, requires_grad=True
-    )
-    p1_t, p2_t = (torch.as_tensor(v, dtype=torch.float32, device=device) for v in (p1, p2))
-    pts1_t, pts2_t = (torch.as_tensor(v, dtype=torch.float32, device=device) for v in (points1, points2))
-    c1_t = torch.as_tensor(w_cam1, dtype=torch.float32, device=device)
-    c2_t = torch.as_tensor(w_cam2, dtype=torch.float32, device=device)
-    optimizer = torch.optim.Adam([points_3d], lr=0.1)
-    valid_bones = [(a, b, l) for (a, b), l in bone_lengths.items() if l > 0]
-    b_idx_a = torch.tensor([v[0] for v in valid_bones], dtype=torch.long, device=device)
-    b_idx_b = torch.tensor([v[1] for v in valid_bones], dtype=torch.long, device=device)
-    b_targets = torch.tensor([v[2] for v in valid_bones], dtype=torch.float32, device=device)
-    bone_tensors = (b_idx_a, b_idx_b, b_targets)
-    for _ in range(iterations):
-        _anatomical_step(points_3d, optimizer, p1_t, p2_t, pts1_t, pts2_t, c1_t, c2_t, bone_tensors, bone_weight)
-    return points_3d.detach().cpu().numpy()
+    fundamental = ex @ p2 @ np.linalg.pinv(p1)
+    norm = np.linalg.norm(fundamental)
+    return fundamental / norm if norm > 1e-12 else fundamental
 
 
-def mpjpe(prediction: np.ndarray, ground_truth: np.ndarray) -> float:
-    """Root-relative 16-joint H36M MPJPE in millimeters."""
-    pred_rel = prediction - np.expand_dims(prediction[..., 0, :], axis=-2)
-    gt_rel = ground_truth - np.expand_dims(ground_truth[..., 0, :], axis=-2)
-    return float(np.mean(np.linalg.norm(
-        pred_rel[..., H36M_EVAL_JOINTS, :] - gt_rel[..., H36M_EVAL_JOINTS, :], axis=-1
-    )))
+def _joint_bone_error(joint_idx: int, points_3d: np.ndarray, bone_lengths: dict) -> float:
+    connected = [b for b in H36M_BONES if joint_idx in b]
+    if not connected:
+        return 0.0
+    errors = []
+    for a, b in connected:
+        target = bone_lengths.get((a, b), 0.0) or bone_lengths.get((b, a), 0.0)
+        if target > 0:
+            actual = np.linalg.norm(points_3d[a] - points_3d[b])
+            errors.append(abs(actual - target) / target)
+    return float(np.mean(errors)) if errors else 0.0
 
 
-def limb_mpjpe(prediction: np.ndarray, ground_truth: np.ndarray) -> float:
-    """Legacy 12-limb root-relative MPJPE in millimeters."""
-    pred_rel = prediction - np.expand_dims(prediction[..., 0, :], axis=-2)
-    gt_rel = ground_truth - np.expand_dims(ground_truth[..., 0, :], axis=-2)
-    return float(np.mean(np.linalg.norm(pred_rel[..., LIMB_INDICES, :] - gt_rel[..., LIMB_INDICES, :], axis=-1)))
+def detect_stereo_occlusions(
+    p1: np.ndarray, p2: np.ndarray,
+    pts1: np.ndarray, pts2: np.ndarray,
+    c1: np.ndarray, c2: np.ndarray,
+    bone_lengths: dict | None = None,
+    initial_3d: np.ndarray | None = None,
+) -> dict:
+    pts1, pts2 = np.asarray(pts1, dtype=float), np.asarray(pts2, dtype=float)
+    c1, c2 = np.asarray(c1, dtype=float).copy(), np.asarray(c2, dtype=float).copy()
+    n = len(pts1)
+
+    c1[~np.isfinite(pts1).all(axis=-1) | (pts1[:, 0] == 0) & (pts1[:, 1] == 0)] = 0.0
+    c2[~np.isfinite(pts2).all(axis=-1) | (pts2[:, 0] == 0) & (pts2[:, 1] == 0)] = 0.0
+
+    try:
+        f_mat = fundamental_from_projections(p1, p2)
+        h1 = np.column_stack((pts1, np.ones(n)))
+        h2 = np.column_stack((pts2, np.ones(n)))
+        f_x1 = h1 @ f_mat.T
+        ft_x2 = h2 @ f_mat
+        num = np.sum(h2 * f_x1, axis=1) ** 2
+        denom = f_x1[:, 0] ** 2 + f_x1[:, 1] ** 2 + ft_x2[:, 0] ** 2 + ft_x2[:, 1] ** 2
+        res = np.sqrt(num / np.maximum(denom, 1e-12))
+    except Exception:
+        res = np.zeros(n)
+
+    if initial_3d is None or not np.isfinite(initial_3d).all():
+        initial_3d = triangulate_dlt(p1, p2, pts1, pts2)
+
+    bone_errs = np.zeros(n)
+    if bone_lengths and np.isfinite(initial_3d).all():
+        bone_errs = np.array([_joint_bone_error(j, initial_3d, bone_lengths) for j in range(n)])
+
+    med_res = float(np.median(res)) if np.isfinite(res).all() and len(res) > 0 else 0.0
+    epipolar_outlier = (res > 1.25 * med_res) & (res > 15.0) if med_res > 0 else np.zeros(n, dtype=bool)
+    severe_epipolar = (res > 1.45 * med_res) if med_res > 0 else np.zeros(n, dtype=bool)
+    bone_outlier = bone_errs > 0.35
+    is_out = severe_epipolar | (epipolar_outlier & bone_outlier)
+
+    detector_occ = (c1 <= 0.3) | (c2 <= 0.3)
+    occluded_mask = detector_occ | is_out | severe_epipolar | (epipolar_outlier & bone_outlier)
+    if np.isfinite(pts1[0]).all() and np.isfinite(pts2[0]).all():
+        occluded_mask[0] = False
+
+    stereo_conf = np.zeros(n)
+    for j in range(n):
+        if occluded_mask[j]:
+            ratio = min(res[j] / max(med_res, 1.0), 3.0) if med_res > 0 else 2.0
+            stereo_conf[j] = float(np.clip(0.30 / ratio, 0.05, 0.28))
+        else:
+            ratio = max(res[j] / max(med_res, 1.0), 1.0) if med_res > 0 else 1.0
+            stereo_conf[j] = float(np.clip(0.95 - 0.15 * (ratio - 1.0), 0.70, 0.98))
+
+    return {
+        "occluded_mask": occluded_mask,
+        "stereo_confidence": np.clip(stereo_conf, 0.0, 1.0),
+        "conf_a": np.clip(c1, 0.0, 1.0),
+        "conf_b": np.clip(c2, 0.0, 1.0),
+        "is_outlier": is_out,
+        "sampson_res": res,
+        "bone_errs": bone_errs,
+    }
+
+
+
 
 
 def procrustes_align(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
@@ -567,17 +636,6 @@ def to_z_up(poses: np.ndarray) -> np.ndarray:
     return out[0] if single else out
 
 
-def best_yaw(p: np.ndarray, g: np.ndarray) -> np.ndarray:
-    """P, G: (N, 3) in Z-up system. Optimal rotation around Z (2D Kabsch on XY plane)."""
-    h = p[:, :2].T @ g[:, :2]
-    u, _, vt = np.linalg.svd(h)
-    d = np.sign(np.linalg.det(vt.T @ u.T))
-    r2 = vt.T @ np.diag([1.0, d]) @ u.T
-    r = np.eye(3)
-    r[:2, :2] = r2
-    return r
-
-
 def evaluate_joint_groups(prediction: np.ndarray, ground_truth: np.ndarray) -> dict[str, float]:
     """Evaluate PA-MPJPE separately for clear limb joints and derived trunk/head joints."""
     aligned = procrustes_align(prediction, ground_truth, mask=H36M_EVAL_JOINTS)
@@ -586,24 +644,5 @@ def evaluate_joint_groups(prediction: np.ndarray, ground_truth: np.ndarray) -> d
         "pa_clear": float(np.mean(diff[CLEAR_JOINTS])),
         "pa_derived": float(np.mean(diff[DERIVED_JOINTS])),
     }
-
-
-def fit_joint_regressor(x: np.ndarray, y: np.ndarray, lam: float = 1.0) -> np.ndarray:
-    """Fit linear mapping W from COCO 3D (N, K, 3) to H36M (N, J, 3) using closed-form Ridge regression."""
-    # ponytail: normal equations avoid external sklearn dependency
-    n, k, _ = x.shape
-    j = y.shape[1]
-    xf = x.transpose(0, 2, 1).reshape(n * 3, k)
-    inv = np.linalg.inv(xf.T @ xf + lam * np.eye(k))
-    w = np.zeros((j, k))
-    for idx in range(j):
-        yj = y[:, idx].reshape(n * 3)
-        w[idx] = inv @ (xf.T @ yj)
-    return w
-
-
-def apply_joint_regressor(w: np.ndarray, x: np.ndarray) -> np.ndarray:
-    """Apply learned regression matrix W to 3D joints X."""
-    return np.einsum("jk,nkc->njc", w, x)
 
 

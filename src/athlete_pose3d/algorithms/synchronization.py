@@ -56,6 +56,7 @@ def _symmetry_errors(points_3d, valid):
 def plausibility_score(
     p1, p2, points1, points2, confidence1, confidence2,
     bone_lengths, minimum_confidence, minimum_valid_joints,
+    **_kwargs,
 ) -> float:
     valid = _valid_joint_mask(points1, points2, confidence1, confidence2, minimum_confidence)
     if valid.sum() < minimum_valid_joints:
@@ -225,6 +226,7 @@ def _recover_uncalibrated_p1_p2(
 def estimate_pair_time_offset(
     repository: PoseRepository, video_a, video_b, frame_count_a, frame_count_b,
     bone_lengths, max_offset=45, sample_count=7, coarse_step=5, min_confidence=0.25, min_valid=8,
+    f_scale: float | str = "auto",
 ):
     lower = min(max_offset + 2, max(0, frame_count_a // 4))
     upper = max(lower + 1, min(frame_count_a - lower - 1, frame_count_b - 1))
@@ -259,7 +261,8 @@ def estimate_pair_time_offset(
     if not np.isfinite(best_score):
         return int(best_offset), np.inf, None, None
     p1, p2 = _recover_uncalibrated_p1_p2(
-        repository, video_a, video_b, frames, best_offset, frame_count_b, bone_lengths
+        repository, video_a, video_b, frames, best_offset, frame_count_b, bone_lengths,
+        f_scale=f_scale,
     )
     return int(best_offset), float(best_score), p1, p2
 
@@ -272,11 +275,13 @@ def _pair_offset_and_p1_p2(
     max_offset, sync_samples, coarse_step, score_options,
 ):
     bone_lens = score_options.get("bone_lengths") or h36m_bone_lengths_from_height()
+    f_scale = score_options.get("f_scale", "auto")
     return estimate_pair_time_offset(
         repository, video_a, video_b, frame_count_a, frame_count_b, bone_lens,
         max_offset=max_offset, sample_count=sync_samples, coarse_step=coarse_step,
         min_confidence=score_options.get("minimum_confidence", 0.25),
         min_valid=score_options.get("minimum_valid_joints", 8),
+        f_scale=f_scale,
     )
 
 

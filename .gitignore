@@ -30,3 +30,5 @@ scratch/dummy_meta.json
 .idea/
 .vscode/
 *.swp
+# Added by code-review-graph
+.code-review-graph/

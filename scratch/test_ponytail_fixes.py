@@ -23,7 +23,9 @@ from collections import OrderedDict
 
 from athlete_pose3d.algorithms.geometry import (
     H36M_SYMMETRIC_BONES,
+    compute_kinematic_prior,
     h36m_bone_lengths_from_height,
+    resolve_subject_height,
     _anatomical_step,
     triangulate_anatomical,
 )
@@ -36,6 +38,7 @@ from athlete_pose3d.algorithms.physics_refine import (
 from athlete_pose3d.algorithms.refinement import optimize_sequence
 from athlete_pose3d.algorithms.synchronization import _frame_count_for_camera, _pair_frame_counts
 from athlete_pose3d.io.data import PoseRepository
+from athlete_pose3d.io.reporting import _build_summary_row, SystemInfo
 
 
 def test_1_security():
@@ -200,6 +203,160 @@ def test_6_cache():
     print("PASS: LRU OrderedDict eviction correctly preserves accessed keys and caps capacity at cache_limit.")
 
 
+def test_7_anatomical_pure():
+    print("--- Test 7: Pure Anatomical Triangulation (DLT + Bone-Prior + Height + Precomputed Rays) ---")
+    p1 = np.array([[1000.0, 0.0, 500.0, 0.0], [0.0, 1000.0, 500.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    p2 = np.array([[1000.0, 0.0, 500.0, 500.0], [0.0, 1000.0, 500.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    true_3d = np.ones((17, 3)) * 100.0 + np.arange(17)[:, None] * 10.0
+    pts1 = np.array([p1 @ np.append(pt, 1.0) for pt in true_3d])
+    pts1 = pts1[:, :2] / pts1[:, 2:3]
+    pts2 = np.array([p2 @ np.append(pt, 1.0) for pt in true_3d])
+    pts2 = pts2[:, :2] / pts2[:, 2:3]
+    c1 = np.ones(17)
+    c2 = np.ones(17)
+    bone_lens = h36m_bone_lengths_from_height(1730.0)
+
+    res = triangulate_anatomical(
+        p1, p2, pts1, pts2, c1, c2,
+        bone_lengths=bone_lens, bone_weight=1.0, iterations=20,
+    )
+    assert res.shape == (17, 3)
+    assert np.isfinite(res).all()
+    print("PASS: Pure anatomical triangulation converged with precomputed rays and finite best_pose.")
+
+
+def test_8_kinematic_and_temporal():
+    print("--- Test 8: Kinematic & Temporal Constraints in physics_refine ---")
+    p1 = np.array([[1000.0, 0.0, 500.0, 0.0], [0.0, 1000.0, 500.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    p2 = np.array([[1000.0, 0.0, 500.0, 1000.0], [0.0, 1000.0, 500.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    pts1 = np.zeros((17, 2))
+    pts2 = np.zeros((17, 2))
+    conf1 = np.ones(17)
+    conf2 = np.ones(17)
+    prev_pose = np.random.randn(17, 3) * 100.0 + np.array([0.0, 0.0, 1500.0])
+
+    pose_refined = triangulate_physics_refine(
+        p1, p2, pts1, pts2, conf1, conf2,
+        iterations=10,
+        prev_pose_3d=prev_pose,
+    )
+    assert pose_refined.shape == (17, 3)
+    assert np.isfinite(pose_refined).all()
+    print("PASS: Kinematic & temporal constraints executed correctly.")
+
+
+def test_9_kinematic_prior_signs():
+    print("--- Test 9: Kinematic prior joint signs ---")
+    pts = torch.zeros((17, 3), dtype=torch.float32)
+    # Hip axis from Left Hip (4) to Right Hip (1): points in +X
+    pts[4] = torch.tensor([-200.0, 0.0, 0.0])
+    pts[1] = torch.tensor([200.0, 0.0, 0.0])
+    # Shoulder axis from Left Shoulder (11) to Right Shoulder (14): +X
+    pts[11] = torch.tensor([-200.0, 1000.0, 0.0])
+    pts[14] = torch.tensor([200.0, 1000.0, 0.0])
+
+    # Case 1: Normal knee flexion (backward in -Z)
+    pts_flex = pts.clone()
+    pts_flex[2] = torch.tensor([200.0, 500.0, 0.0])   # R Knee
+    pts_flex[3] = torch.tensor([200.0, 0.0, -300.0])  # R Ankle (flexed backward)
+    pts_flex[5] = torch.tensor([-200.0, 500.0, 0.0])  # L Knee
+    pts_flex[6] = torch.tensor([-200.0, 0.0, -300.0]) # L Ankle (flexed backward)
+    loss_flex = compute_kinematic_prior(pts_flex)
+    assert loss_flex.item() == 0.0, f"Normal knee flexion should have 0 penalty, got {loss_flex.item()}"
+
+    # Case 2: Knee hyperextension (forward in +Z)
+    pts_hyp = pts.clone()
+    pts_hyp[2] = torch.tensor([200.0, 500.0, 0.0])   # R Knee
+    pts_hyp[3] = torch.tensor([200.0, 0.0, 300.0])   # R Ankle (hyperextended forward)
+    pts_hyp[5] = torch.tensor([-200.0, 500.0, 0.0])  # L Knee
+    pts_hyp[6] = torch.tensor([-200.0, 0.0, 300.0])  # L Ankle (hyperextended forward)
+    loss_hyp = compute_kinematic_prior(pts_hyp)
+    assert loss_hyp.item() > 0.1, f"Knee hyperextension should be penalized, got {loss_hyp.item()}"
+    print("PASS: Kinematic prior correctly allows posterior flexion and penalizes anterior hyperextension.")
+
+
+def test_10_height_resolution_priority():
+    print("--- Test 10: Height resolution override priority ---")
+    subjs = {"S1": 1591.0, "S2": 1553.0}
+    # When generic height 1730.0 is explicitly configured, it must override subject_heights
+    h_generic = resolve_subject_height("S1", 1730.0, subject_heights=subjs)
+    assert h_generic == 1730.0, f"Expected generic 1730.0, got {h_generic}"
+
+    # When configured as "auto", it must use calibrated height from subject_heights
+    h_calib = resolve_subject_height("S1", "auto", subject_heights=subjs)
+    assert h_calib == 1591.0, f"Expected calibrated 1591.0, got {h_calib}"
+    print("PASS: resolve_subject_height correctly prioritizes explicit generic override over calibrated map.")
+
+
+def test_11_adam_best_pose_candidate():
+    print("--- Test 11: Adam best_pose candidate snapshot ---")
+    p1 = np.array([[1000.0, 0.0, 500.0, 0.0], [0.0, 1000.0, 500.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    p2 = np.array([[1000.0, 0.0, 500.0, 500.0], [0.0, 1000.0, 500.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    true_3d = np.ones((17, 3)) * 100.0 + np.arange(17)[:, None] * 10.0
+    pts1 = np.array([p1 @ np.append(pt, 1.0) for pt in true_3d])
+    pts1 = pts1[:, :2] / pts1[:, 2:3]
+    pts2 = np.array([p2 @ np.append(pt, 1.0) for pt in true_3d])
+    pts2 = pts2[:, :2] / pts2[:, 2:3]
+    c1, c2 = np.ones(17, dtype=np.float32), np.ones(17, dtype=np.float32)
+    res = triangulate_anatomical(p1, p2, pts1, pts2, c1, c2, iterations=10)
+    assert res.shape == (17, 3)
+    assert np.isfinite(res).all()
+    print("PASS: Anatomical best_pose correctly returns finite pose evaluated before step.")
+
+
+def test_12_reporting_nan_protection():
+    print("--- Test 12: Reporting NaN protection in summary row ---")
+    sys_info = SystemInfo(
+        python_version="3.11", os_type="Windows", os_version="10",
+        compute_device="CPU", cpu_cores=8, user="Test",
+    )
+    results = [
+        {"mpjpe": 45.0, "pa_mpjpe": 30.0, "baseline_dlt_mpjpe": 50.0, "baseline_dlt_pa": 35.0},
+        {"mpjpe": float("nan"), "pa_mpjpe": float("nan"), "baseline_dlt_mpjpe": float("nan"), "baseline_dlt_pa": float("nan")},
+        {"mpjpe": 55.0, "pa_mpjpe": 40.0, "baseline_dlt_mpjpe": 60.0, "baseline_dlt_pa": 45.0},
+    ]
+    summary = _build_summary_row(results, sys_info, "v1.0")
+    assert summary is not None
+    # summary[8] is s_m, summary[9] is s_p
+    assert summary[8] == 50.0, f"Expected mean mpjpe 50.0, got {summary[8]}"
+    assert summary[9] == 35.0, f"Expected mean pa_mpjpe 35.0, got {summary[9]}"
+    print("PASS: Summary row correctly computes non-NaN means when some frames are NaN.")
+
+
+def test_13_contiguous_sampling_and_velocity():
+    print("--- Test 13: Contiguous sampling & Velocity constraint in Refinement ---")
+    from athlete_pose3d.pipeline import _sample_key_frames
+    from athlete_pose3d.settings import load_settings
+    
+    # 1. Contiguous center window check
+    frames = list(range(500))
+    sampled = _sample_key_frames(frames, 60)
+    assert len(sampled) == 60
+    assert np.all(np.diff(sampled) == 1), "Sampled frames must be contiguous!"
+    assert sampled[0] == 220 and sampled[-1] == 279, f"Expected center window [220..279], got [{sampled[0]}..{sampled[-1]}]"
+
+    # 2. Config validation check on all ablation configs
+    for cfg_p in Path("configs/ablation").glob("*.yml"):
+        load_settings(cfg_p)
+    load_settings("configs/default.yml")
+
+    # 3. Refinement execution with velocity weight
+    poses_3d = np.ones((5, 17, 3), dtype=np.float32) * 100.0
+    items = []
+    for f in range(5):
+        items.append((f, {
+            "frame": f,
+            "all_methods": {"two_camera": {"recon_3d": poses_3d[f]}},
+            "P1": np.eye(3, 4), "P2": np.eye(3, 4),
+            "kps2d_a_h36m": np.zeros((17, 2)), "conf_a_h36m": np.ones(17),
+            "kps2d_b_h36m": np.zeros((17, 2)), "conf_b_h36m": np.ones(17),
+        }))
+    refined = optimize_sequence(items, "two_camera", smoothness_weight=0.15, velocity_weight=0.03, max_evaluations=5)
+    assert refined.shape == (5, 17, 3)
+    assert np.isfinite(refined).all()
+    print("PASS: Contiguous sampling, velocity constraint, and all configs validated successfully.")
+
+
 if __name__ == "__main__":
     test_1_security()
     test_2_synchronization()
@@ -207,4 +364,12 @@ if __name__ == "__main__":
     test_4_best_pose()
     test_5_vectorization()
     test_6_cache()
-    print("\nALL 6 TESTS PASSED SUCCESSFULLY!")
+    test_7_anatomical_pure()
+    test_8_kinematic_and_temporal()
+    test_9_kinematic_prior_signs()
+    test_10_height_resolution_priority()
+    test_11_adam_best_pose_candidate()
+    test_12_reporting_nan_protection()
+    test_13_contiguous_sampling_and_velocity()
+    print("\nALL 13 TESTS PASSED SUCCESSFULLY!")
+

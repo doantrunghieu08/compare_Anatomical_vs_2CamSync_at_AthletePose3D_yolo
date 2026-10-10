@@ -155,7 +155,7 @@ class PoseRepository:
         self.pose_suffix = pose_suffix
         self.key_frames_suffix = key_frames_suffix
         self.cache_limit = cache_limit
-        self._arrays: dict[str, np.ndarray] = {}
+        self._arrays: OrderedDict[str, np.ndarray] = OrderedDict()
         self._frames: OrderedDict[tuple[str, int], dict | None] = OrderedDict()
 
     @staticmethod
@@ -217,11 +217,19 @@ class PoseRepository:
                 try:
                     array = np.load(pose_path, mmap_mode="r")
                     self._arrays[str(pose_path)] = array
+                    while len(self._arrays) > 50:
+                        _, evicted = self._arrays.popitem(last=False)
+                        if hasattr(evicted, "_mmap") and evicted._mmap is not None:
+                            try:
+                                evicted._mmap.close()
+                            except Exception:
+                                pass
                     result = self._pose_from_array(array, frame_index, is_coco=is_coco)
                 except (OSError, ValueError) as error:
                     print(f"Failed to read Pose2D {pose_path}: {error}")
                     result = None
         else:
+            self._arrays.move_to_end(str(pose_path))
             result = self._pose_from_array(array, frame_index, is_coco=is_coco)
 
         self._frames[key] = result

@@ -72,7 +72,7 @@ def _extract_confidence_and_occlusion(result):
     kps_b = result.get("kps2d_b_h36m") if result.get("kps2d_b_h36m") is not None else result.get("kps2d_b")
     if p1 is not None and p2 is not None and kps_a is not None and kps_b is not None:
         try:
-            from ..algorithms.evidence_fusion import detect_stereo_occlusions
+            from ..algorithms.geometry import detect_stereo_occlusions
             occ_info = detect_stereo_occlusions(
                 p1, p2, kps_a, kps_b,
                 result.get("belief_master", result.get("conf_a_h36m")),
@@ -212,8 +212,10 @@ def _build_summary_row(results, system: SystemInfo, version: str):
                  if not math.isnan(float(r.get("baseline_dlt_pa", float("nan"))))]
     b_m = sum(b_mpjpe_vals) / len(b_mpjpe_vals) if b_mpjpe_vals else float("nan")
     b_p = sum(b_pa_vals) / len(b_pa_vals) if b_pa_vals else float("nan")
-    s_m = sum(float(r["mpjpe"]) for r in results) / n
-    s_p = sum(float(r["pa_mpjpe"]) for r in results) / n
+    s_mpjpe_vals = [float(r["mpjpe"]) for r in results if not math.isnan(float(r.get("mpjpe", float("nan"))))]
+    s_pa_vals = [float(r["pa_mpjpe"]) for r in results if not math.isnan(float(r.get("pa_mpjpe", float("nan"))))]
+    s_m = sum(s_mpjpe_vals) / len(s_mpjpe_vals) if s_mpjpe_vals else float("nan")
+    s_p = sum(s_pa_vals) / len(s_pa_vals) if s_pa_vals else float("nan")
     n_dlt = len(b_pa_vals)
     b_m_str = round(b_m, 2) if not math.isnan(b_m) else "N/A"
     b_p_str = round(b_p, 2) if not math.isnan(b_p) else "N/A"
