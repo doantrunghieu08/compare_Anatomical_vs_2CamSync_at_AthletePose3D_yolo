@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import getpass
 import math
 import os
 import platform
@@ -32,7 +29,6 @@ class SystemInfo:
     os_version: str
     compute_device: str
     cpu_cores: int | None
-    user: str
 
     @classmethod
     def collect(cls):
@@ -43,7 +39,7 @@ class SystemInfo:
         )
         return cls(
             platform.python_version(), platform.system(), platform.release(),
-            device, os.cpu_count(), getpass.getuser(),
+            device, os.cpu_count(),
         )
 
 
@@ -155,9 +151,15 @@ def _compute_frame_joint_errors(result):
 def _format_single_report_row(result, system: SystemInfo, version: str, notes: str):
     all_m = result.get("all_methods", {})
     dlt_m = all_m.get("DLT (baseline)") or all_m.get("DLT (raw baseline)") or {}
-    b_mpjpe = float(result.get("baseline_dlt_mpjpe") if result.get("baseline_dlt_mpjpe") is not None else dlt_m.get("mpjpe", float("nan")))
+    b_raw = float(result.get("baseline_dlt_raw_mpjpe") if result.get("baseline_dlt_raw_mpjpe") is not None else dlt_m.get("raw_mpjpe", float("nan")))
+    b_rigid = float(result.get("baseline_dlt_rigid_mpjpe") if result.get("baseline_dlt_rigid_mpjpe") is not None else dlt_m.get("rigid_mpjpe", float("nan")))
+    b_mpjpe = float(result.get("baseline_dlt_mpjpe") if result.get("baseline_dlt_mpjpe") is not None else (b_rigid if not math.isnan(b_rigid) else dlt_m.get("mpjpe", float("nan"))))
     b_pa = float(result.get("baseline_dlt_pa") if result.get("baseline_dlt_pa") is not None else dlt_m.get("pa_mpjpe", float("nan")))
-    s_mpjpe, s_pa = float(result["mpjpe"]), float(result["pa_mpjpe"])
+
+    s_raw = float(result.get("raw_mpjpe", float("nan")))
+    s_rigid = float(result.get("rigid_mpjpe", result.get("mpjpe", float("nan"))))
+    s_mpjpe = float(result["mpjpe"])
+    s_pa = float(result["pa_mpjpe"])
 
     d_mpjpe = (
         round((b_mpjpe - s_mpjpe) / b_mpjpe * 100.0, 2)
@@ -179,7 +181,14 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
         result.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         str(result["motion"]), str(result["subject"]),
         str(result["cam_a"]), str(result["cam_b"]), int(result["frame"]),
-        round(b_mpjpe, 2), round(b_pa, 2), round(s_mpjpe, 2), round(s_pa, 2),
+        round(b_raw, 2) if not math.isnan(b_raw) else "N/A",
+        round(b_rigid, 2) if not math.isnan(b_rigid) else "N/A",
+        round(b_mpjpe, 2) if not math.isnan(b_mpjpe) else "N/A",
+        round(b_pa, 2) if not math.isnan(b_pa) else "N/A",
+        round(s_raw, 2) if not math.isnan(s_raw) else "N/A",
+        round(s_rigid, 2) if not math.isnan(s_rigid) else "N/A",
+        round(s_mpjpe, 2) if not math.isnan(s_mpjpe) else "N/A",
+        round(s_pa, 2) if not math.isnan(s_pa) else "N/A",
         d_mpjpe, d_pa,
         pa_c, pa_d,
         metrics["mean_conf"],
@@ -193,7 +202,7 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
         int(result.get("global_sync_delta", 0)),
         int(result.get("dynamic_sync_delta", 0)),
         system.python_version, system.os_type, system.os_version,
-        system.compute_device, str(system.cpu_cores), system.user,
+        system.compute_device, str(system.cpu_cores),
         version, notes,
     ]
 
@@ -206,19 +215,35 @@ def _build_summary_row(results, system: SystemInfo, version: str):
     if not results:
         return None
     n = len(results)
-    b_mpjpe_vals = [float(r["baseline_dlt_mpjpe"]) for r in results
-                    if not math.isnan(float(r.get("baseline_dlt_mpjpe", float("nan"))))]
-    b_pa_vals = [float(r["baseline_dlt_pa"]) for r in results
-                 if not math.isnan(float(r.get("baseline_dlt_pa", float("nan"))))]
+    b_raw_vals = [float(r["baseline_dlt_raw_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_raw_mpjpe", float("nan"))))]
+    b_rigid_vals = [float(r["baseline_dlt_rigid_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_rigid_mpjpe", float("nan"))))]
+    b_mpjpe_vals = [float(r["baseline_dlt_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_mpjpe", float("nan"))))]
+    b_pa_vals = [float(r["baseline_dlt_pa"]) for r in results if not math.isnan(float(r.get("baseline_dlt_pa", float("nan"))))]
+
+    b_raw_m = sum(b_raw_vals) / len(b_raw_vals) if b_raw_vals else float("nan")
+    b_rigid_m = sum(b_rigid_vals) / len(b_rigid_vals) if b_rigid_vals else float("nan")
     b_m = sum(b_mpjpe_vals) / len(b_mpjpe_vals) if b_mpjpe_vals else float("nan")
     b_p = sum(b_pa_vals) / len(b_pa_vals) if b_pa_vals else float("nan")
+
+    s_raw_vals = [float(r["raw_mpjpe"]) for r in results if not math.isnan(float(r.get("raw_mpjpe", float("nan"))))]
+    s_rigid_vals = [float(r["rigid_mpjpe"]) for r in results if not math.isnan(float(r.get("rigid_mpjpe", float("nan"))))]
     s_mpjpe_vals = [float(r["mpjpe"]) for r in results if not math.isnan(float(r.get("mpjpe", float("nan"))))]
     s_pa_vals = [float(r["pa_mpjpe"]) for r in results if not math.isnan(float(r.get("pa_mpjpe", float("nan"))))]
+
+    s_raw_m = sum(s_raw_vals) / len(s_raw_vals) if s_raw_vals else float("nan")
+    s_rigid_m = sum(s_rigid_vals) / len(s_rigid_vals) if s_rigid_vals else float("nan")
     s_m = sum(s_mpjpe_vals) / len(s_mpjpe_vals) if s_mpjpe_vals else float("nan")
     s_p = sum(s_pa_vals) / len(s_pa_vals) if s_pa_vals else float("nan")
+
     n_dlt = len(b_pa_vals)
+    b_raw_str = round(b_raw_m, 2) if not math.isnan(b_raw_m) else "N/A"
+    b_rigid_str = round(b_rigid_m, 2) if not math.isnan(b_rigid_m) else "N/A"
     b_m_str = round(b_m, 2) if not math.isnan(b_m) else "N/A"
     b_p_str = round(b_p, 2) if not math.isnan(b_p) else "N/A"
+
+    s_raw_str = round(s_raw_m, 2) if not math.isnan(s_raw_m) else "N/A"
+    s_rigid_str = round(s_rigid_m, 2) if not math.isnan(s_rigid_m) else "N/A"
+
     d_m_str = (
         round((b_m - s_m) / b_m * 100.0, 2)
         if not math.isnan(b_m) and abs(b_m) > 1e-9
@@ -247,14 +272,15 @@ def _build_summary_row(results, system: SystemInfo, version: str):
 
     return [
         "Summary_Mean", "ALL", "ALL", "-", "-", n,
-        b_m_str, b_p_str, round(s_m, 2), round(s_p, 2),
+        b_raw_str, b_rigid_str, b_m_str, b_p_str,
+        s_raw_str, s_rigid_str, round(s_m, 2), round(s_p, 2),
         d_m_str, d_p_str,
         pa_c_mean, pa_d_mean,
         conf_mean, unoccl_mean, occl_mean, num_occl_mean,
         "-", "-", "-",
         "AVERAGE", 0, 0,
         system.python_version, system.os_type, system.os_version,
-        system.compute_device, str(system.cpu_cores), system.user,
+        system.compute_device, str(system.cpu_cores),
         version, f"Mean across all evaluated frames; DLT valid: {n_dlt}/{n}",
     ]
 
@@ -397,6 +423,7 @@ class CsvResultReporter:
         # Sequence-level rotation & scale diagnosis per camera pair
         pair_groups = defaultdict(list)
         for r in self._all_results:
+            dlt_recon = (r.get("all_methods", {}).get("DLT (baseline)") or {}).get("recon_3d")
             if (
                 "recon_3d" in r
                 and r.get("gt_3d") is not None
@@ -404,15 +431,40 @@ class CsvResultReporter:
                 and np.isfinite(r["gt_3d"]).all()
             ):
                 key = (r.get("subject", ""), r.get("motion", ""), r.get("cam_a", ""), r.get("cam_b", ""))
-                pair_groups[key].append((r["recon_3d"], r["gt_3d"]))
+                pair_groups[key].append((r["recon_3d"], dlt_recon, r["gt_3d"]))
 
         if pair_groups:
             pair_diags = []
-            for key, pairs in pair_groups.items():
+            seq_rows = []
+            for (subject, motion, cam_a, cam_b), pairs in pair_groups.items():
                 if len(pairs) >= 1:
-                    preds, gts = zip(*pairs)
+                    preds, dlts, gts = zip(*pairs)
                     diag = sequence_diagnosis(np.stack(preds), np.stack(gts))
                     pair_diags.append((len(pairs), diag))
+
+                    dlt_diag = None
+                    valid_dlts = [d for d in dlts if d is not None and np.isfinite(d).all()]
+                    if len(valid_dlts) == len(pairs):
+                        dlt_diag = sequence_diagnosis(np.stack(valid_dlts), np.stack(gts))
+
+                    seq_rows.append({
+                        "Subject": subject,
+                        "Motion": motion,
+                        "Cam_A": cam_a,
+                        "Cam_B": cam_b,
+                        "Frames": len(pairs),
+                        "Method_SeqRot_MPJPE": round(diag["mpjpe_seq_rot_mm"], 2),
+                        "DLT_SeqRot_MPJPE": round(dlt_diag["mpjpe_seq_rot_mm"], 2) if dlt_diag else "N/A",
+                        "Method_SeqSim_MPJPE": round(diag["mpjpe_seq_sim_mm"], 2),
+                        "DLT_SeqSim_MPJPE": round(dlt_diag["mpjpe_seq_sim_mm"], 2) if dlt_diag else "N/A",
+                        "Method_Scale": round(diag["scale_ratio"], 3),
+                        "Method_RotAngle_deg": round(diag["angle_deg"], 1),
+                    })
+
+            if seq_rows:
+                seq_path = self.output_csv.parent / f"{self.output_csv.stem}_sequence_metrics.csv"
+                pd.DataFrame(seq_rows).to_csv(seq_path, index=False)
+                print(f"Saved sequence diagnosis metrics to {seq_path}")
 
             total_frames = sum(cnt for cnt, _ in pair_diags)
             if total_frames > 0:
@@ -435,13 +487,13 @@ class CsvResultReporter:
 
         print("\n" + "=" * 60)
         print(f"BENCHMARK SUMMARY (N = {s[5]} frames)")
-        print(f"Baseline DLT MPJPE:    {_fmt(s[6])} mm | PA: {_fmt(s[7])} mm")
-        print(f"Selected Method MPJPE: {_fmt(s[8])} mm | PA: {_fmt(s[9])} mm")
-        print(f"Delta (Base - New):    {_fmt(s[10], sign=True)} % | PA: {_fmt(s[11], sign=True)} %")
-        if s[12] != "N/A" and s[13] != "N/A":
-            print(f"Joint Groups:          PA-Clear: {s[12]} mm | PA-Derived: {s[13]} mm")
-        print(f"Joint Reliability:     Mean Conf: {s[14]} | Occluded Joints/Frame: {s[17]}")
-        print(f"Occlusion Breakdown:   Unoccluded MPJPE: {s[15]} mm | Occluded MPJPE: {s[16]} mm")
+        print(f"Baseline DLT:    Raw: {_fmt(s[6])} mm | Rigid: {_fmt(s[7])} mm | PA: {_fmt(s[9])} mm")
+        print(f"Selected Method: Raw: {_fmt(s[10])} mm | Rigid: {_fmt(s[11])} mm | PA: {_fmt(s[13])} mm")
+        print(f"Delta (DLT-New): Rigid: {_fmt(s[14], sign=True)} % | PA: {_fmt(s[15], sign=True)} %")
+        if s[16] != "N/A" and s[17] != "N/A":
+            print(f"Joint Groups:    PA-Clear: {s[16]} mm | PA-Derived: {s[17]} mm")
+        print(f"Reliability:     Mean Conf: {s[18]} | Occluded Joints/Frame: {s[21]}")
+        print(f"Occlusion:       Unoccluded: {s[19]} mm | Occluded: {s[20]} mm")
         print("=" * 60)
 
         if df_per_joint is not None and not df_per_joint.empty:

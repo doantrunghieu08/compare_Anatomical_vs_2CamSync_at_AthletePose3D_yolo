@@ -133,7 +133,7 @@ def coco_to_h36m_2d(kps_coco: np.ndarray, conf_coco: np.ndarray) -> tuple[np.nda
     h36m_conf[8] = min(h36m_conf[11], h36m_conf[14])
     h36m[7] = 0.5 * (h36m[0] + h36m[8])
     h36m_conf[7] = min(h36m_conf[0], h36m_conf[8])
-    # ponytail: extrapolate head vertex (10) and neck (9) from thorax (8) -> nose vector
+    # Extrapolate head vertex (10) and neck (9) from thorax (8) -> nose vector
     v = kps_coco[0] - h36m[8]
     if np.linalg.norm(v) > 1e-4:
         h36m[10] = h36m[8] + 1.45 * v

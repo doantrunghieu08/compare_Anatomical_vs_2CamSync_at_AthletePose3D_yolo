@@ -11,8 +11,8 @@ input:
   pose_cache_limit: 550
   minimum_manifest_confidence: 0.6
 output:
-  results_csv: outputs/results.csv
-  overwrite: false
+  results_csv: outputs/ablation/C2_refine_accel_vel.csv
+  overwrite: true
 pipeline:
   max_pairs: 15
   chunk_size: 5
@@ -180,9 +180,8 @@ pipeline:
     max_evaluations: 30
     max_drift: 360.0
 method:
-  # Direct anatomical triangulation: Huber ray loss + bone length priors
   name: anatomical
   options:
     iterations: 80
     bone_weight: 1.0
-
+    lr: 0.1

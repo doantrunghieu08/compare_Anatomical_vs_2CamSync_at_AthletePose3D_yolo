@@ -33,7 +33,7 @@ def compute_ground_contact_loss(
     ground_z: float = 0.0,
     margin: float = 5.0,
 ) -> torch.Tensor:
-    # ponytail: ground_z assumes world-frame vertical coordinate (Z-up), ground_z=None by default
+    # Ground plane Z assumes world-frame vertical coordinate (Z-up), ground_z=None by default
     left_ankle_z = points_3d[..., 6, 2]
     right_ankle_z = points_3d[..., 3, 2]
     penalty_left = functional.relu(ground_z - left_ankle_z - margin) ** 2
@@ -137,7 +137,7 @@ def _optimize_biomechanics_step(
     sym_loss = compute_symmetry_loss(points_3d, sym_tensors=sym_tensors)
     loss = data_weight * weighted_data + bone_weight * bone_loss + sym_weight * sym_loss
 
-    # ponytail: anatomical kinematic prior (knee/elbow hyperextension + spine column)
+    # Anatomical kinematic prior (knee/elbow hyperextension + spine column)
     if kinematic_weight > 0.0:
         kin_loss = compute_kinematic_prior(points_3d)
         v_s1 = functional.normalize(points_3d[7] - points_3d[0], dim=-1, eps=1e-6)
@@ -146,7 +146,7 @@ def _optimize_biomechanics_step(
         spine_loss = functional.relu(0.85 - torch.dot(v_s1, v_s2)) ** 2 + functional.relu(0.85 - torch.dot(v_s2, v_s3)) ** 2
         loss = loss + kinematic_weight * (kin_loss + spine_loss)
 
-    # ponytail: temporal continuity constraint against previous frame
+    # Temporal continuity constraint against previous frame
     if prev_3d is not None:
         vel_loss = functional.huber_loss(points_3d, prev_3d, reduction="none", delta=35.0).sum(-1)
         loss = loss + 0.08 * torch.sum(vel_loss)

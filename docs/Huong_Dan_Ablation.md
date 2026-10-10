@@ -1,78 +1,106 @@
 # Hướng Dẫn & Báo Cáo Nghiên Cứu Ablation Study
 
-Tài liệu này hướng dẫn cách chạy và giải thích chi tiết cơ sở khoa học đằng sau bộ thực nghiệm **Ablation Study (5 bước)** của dự án AthletePose3D.
+Tài liệu này hướng dẫn cách chạy và giải thích chi tiết cơ sở khoa học đằng sau bộ thực nghiệm **Ablation Study (Ma trận 2×2 và các thành phần tối ưu)** của dự án AthletePose3D.
 
 ---
 
 ## 1. Mục Đích & Thiết Kế Thử Nghiệm
 
-Ablation study được thiết kế nhằm cô lập chính xác đóng góp của từng thành phần trong mô hình, đảm bảo sai số giảm dần một cách đơn điệu:
+Ablation study được thiết kế nhằm phân tách rõ ràng và cô lập tác động của từng thành phần kỹ thuật, đặc biệt là tách biệt giữa **hiệu ứng phương pháp tam giác đạc** và **hiệu ứng thang đo nhân trắc học (chiều cao)**.
 
-$$\text{DLT} \xrightarrow{+\text{Anat}} \text{Generic} \xrightarrow{+\text{Calib}} \text{Calibrated} \xrightarrow{+\text{Accel}} \text{SeqRefine} \xrightarrow{+\text{Vel}} \text{Full Pipeline}$$
+Hệ thống đánh giá qua 4 thước đo chuẩn mực:
+1. **Raw MPJPE**: Chỉ trừ gốc Pelvis (joint 0), giữ nguyên hệ tọa độ và thang đo thực tế.
+2. **Rigid MPJPE** (per-frame): Căn chỉnh tối ưu phép xoay $SO(3)$ và tịnh tiến từng khung hình (không co giãn thang đo).
+3. **Seq-Rot MPJPE**: Căn chỉnh một phép xoay $SO(3)$ duy nhất cho toàn bộ chuỗi clip (đánh giá độ ổn định hướng thời gian).
+4. **PA-MPJPE**: Căn chỉnh Procrustes toàn phần (xoay, tịnh tiến và co giãn tỉ lệ $s$).
 
-```text
-61.51 mm ──────> 60.50 mm ──────> 58.77 mm ──────> 56.60 mm ──────> 55.50 mm
-```
-
----
-
-## 2. Chi Tiết Từng Bước Ablation
-
-### Bước 1: Baseline DLT ([01_dlt.yml](file:///D:/compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo/configs/ablation/01_dlt.yml))
-- **Mục tiêu**: Thiết lập mốc cơ sở tam giác đạc đại số tuyến tính thuần túy.
-- **Cấu hình**: `method.name: dlt`, không tối ưu hóa phi tuyến, không ràng buộc xương hay thời gian.
-- **Sai số S1**: **61.51 mm MPJPE | 51.80 mm PA-MPJPE**.
-
-### Bước 2: Tam giác đạc Giải phẫu với Chiều cao Chung ([02_anatomical_generic_height.yml](file:///D:/compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo/configs/ablation/02_anatomical_generic_height.yml))
-- **Mục tiêu**: Đánh giá hiệu quả của hàm mất mát Huber trên khoảng cách tia camera và ràng buộc độ dài xương H36M danh định (1730 mm).
-- **Cấu hình**: `method.name: anatomical`, `subject_height_mm: 1730.0`.
-- **Sai số S1**: **60.50 mm MPJPE | 51.10 mm PA-MPJPE** (giảm -1.01 mm).
-
-### Bước 3: Hiệu chuẩn Chiều cao Nhân trắc học ([03_anatomical_calibrated_height.yml](file:///D:/compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo/configs/ablation/03_anatomical_calibrated_height.yml))
-- **Mục tiêu**: Đánh giá tác động của việc cá nhân hóa kích thước cơ thể theo chiều cao đo đạc thực tế của từng vận động viên:
-  - S1: 1591.0 mm (nữ trượt băng nghệ thuật)
-  - S2: 1553.0 mm
-  - S3: 1733.0 mm (nam)
-- **Cấu hình**: `subject_height_mm: auto` (tự động ánh xạ từ bảng `subject_heights`).
-- **Sai số S1**: **58.77 mm MPJPE | 50.52 mm PA-MPJPE** (giảm tiếp -1.73 mm).
-
-### Bước 4: Tối ưu Chuỗi Liên tục với Gia tốc ([04_sequence_refine.yml](file:///D:/compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo/configs/ablation/04_sequence_refine.yml))
-- **Mục tiêu**: Bổ sung tính liên tục thời gian trên cửa sổ khung hình tâm liên tiếp (`contiguous window`, $\Delta t = 1$), phạt gia tốc đột ngột bằng hàm Huber.
-- **Cấu hình**: `sequence_refinement.enabled: true`, `smoothness_weight: 0.15`, `velocity_weight: 0.0`.
-- **Sai số S1**: **56.60 mm MPJPE | 50.87 mm PA-MPJPE** (giảm tiếp -2.17 mm).
-
-### Bước 5: Full Pipeline Động học Toàn phần ([05_full_pipeline.yml](file:///D:/compare_Anatomical_vs_2CamSync_at_AthletePose3D_yolo/configs/ablation/05_full_pipeline.yml))
-- **Mục tiêu**: Bổ sung thành phần cản vận tốc (`velocity damping`) để hạn chế rung lắc vi mô giữa hai frame kề nhau, kết hợp khóa đồng bộ không jitter `sync_local_radius: 0`.
-- **Cấu hình**: `smoothness_weight: 0.15`, `velocity_weight: 0.03`, `sync_local_radius: 0`.
-- **Sai số S1**: **55.50 mm MPJPE | 50.40 mm PA-MPJPE** (giảm thêm -1.10 mm, tổng giảm **-6.01 mm, ~9.8%** so với DLT).
+> [!NOTE]
+> Mối quan hệ toán học luôn được bảo đảm trên từng khung hình:  
+> $$\text{Raw MPJPE} \ge \text{Rigid MPJPE} \ge \text{PA-MPJPE}$$
 
 ---
 
-## 3. Cách Thực Thi
+## 2. Ma Trận Ablation 2×2 và Các Biến Thể
 
-### Chạy toàn bộ Ablation Suite trên S1:
+| ID | Cấu hình | Phương pháp | Chiều cao VĐV | Sequence Refine | Mục đích cô lập biến |
+| :---: | :--- | :---: | :---: | :---: | :--- |
+| **A1** | [A1_dlt_generic.yml](../configs/ablation/A1_dlt_generic.yml) | `dlt` | 1730 mm (generic) | Tắt | Baseline DLT thuần với scale danh định |
+| **A2** | [A2_dlt_calibrated.yml](../configs/ablation/A2_dlt_calibrated.yml) | `dlt` | Hiệu chuẩn (`auto`) | Tắt | Baseline DLT với scale cá nhân hóa |
+| **B1** | [B1_anat_generic.yml](../configs/ablation/B1_anat_generic.yml) | `anatomical` | 1730 mm (generic) | Tắt | Anatomical Huber ray khi scale danh định |
+| **B2** | [B2_anat_calibrated.yml](../configs/ablation/B2_anat_calibrated.yml) | `anatomical` | Hiệu chuẩn (`auto`) | Tắt | Anatomical với prior xương cá nhân hóa |
+| **C1** | [C1_refine_accel.yml](../configs/ablation/C1_refine_accel.yml) | `anatomical` | Hiệu chuẩn (`auto`) | Bật (Chỉ gia tốc) | Hiệu ứng làm mượt gia tốc thời gian |
+| **C2** | [C2_refine_accel_vel.yml](../configs/ablation/C2_refine_accel_vel.yml) | `anatomical` | Hiệu chuẩn (`auto`) | Bật (Gia tốc + Vận tốc) | Full pipeline hoàn chỉnh |
+
+### Cách phân tích hiệu ứng:
+- **Hiệu ứng Phương pháp (Method Effect)**: So sánh `A2` $\to$ `B2` (cùng chiều cao hiệu chuẩn).
+- **Hiệu ứng Thang đo Chiều cao (Height Calibration Effect)**: So sánh `A1` $\to$ `A2` và `B1` $\to$ `B2`.
+- **Hiệu ứng Tối ưu Chuỗi (Sequence Refinement Effect)**: So sánh `B2` $\to$ `C1` và `C1` $\to$ `C2`.
+
+> [!IMPORTANT]
+> Với các cấu hình DLT (`A1` và `A2`), cột kết quả phương pháp chính (`Selected_Method`) và DLT baseline là đồng nhất ($\Delta = 0$). Việc so sánh cần đối chiếu trực tiếp giá trị tuyệt đối giữa các cấu hình thay vì chỉ dựa vào độ lệch nội bộ từng file.
+
+---
+
+## 3. Chi Tiết Từng Cấu Hình
+
+### A1: Baseline DLT Generic ([A1_dlt_generic.yml](../configs/ablation/A1_dlt_generic.yml))
+- Tam giác đạc đại số tuyến tính có trọng số tin cậy.
+- Sử dụng chiều cao mặc định chung 1730.0 mm để khôi phục độ sâu camera $P_2$.
+- Không áp dụng tối ưu hóa phi tuyến hay ràng buộc thời gian.
+
+### A2: Baseline DLT Calibrated ([A2_dlt_calibrated.yml](../configs/ablation/A2_dlt_calibrated.yml))
+- Vẫn dùng giải thuật DLT thuần túy.
+- Thang đo camera $P_2$ được chuẩn hóa theo chiều cao thực tế của từng vận động viên (`auto`: S1=1591mm, S2=1553mm, S3=1733mm).
+
+### B1: Anatomical Generic ([B1_anat_generic.yml](../configs/ablation/B1_anat_generic.yml))
+- Khởi tạo từ DLT, tối ưu hóa bằng Adam với hàm Huber ray loss.
+- Độ dài xương tham chiếu lấy theo tỉ lệ cơ thể nam H36M scaled theo chiều cao chung 1730 mm.
+
+### B2: Anatomical Calibrated ([B2_anat_calibrated.yml](../configs/ablation/B2_anat_calibrated.yml))
+- Tối ưu hóa bằng Adam với hàm Huber ray loss kết hợp độ dài xương tham chiếu chuẩn theo chiều cao thực của từng vận động viên.
+- `lr: 0.1` (có thể cấu hình trong YAML), `bone_weight: 1.0`, `iterations: 80`.
+
+### C1: Sequence Refinement Accel ([C1_refine_accel.yml](../configs/ablation/C1_refine_accel.yml))
+- Kế thừa B2, kích hoạt tối ưu hóa chuỗi cửa sổ khung hình liên tục bằng L-BFGS.
+- Phạt gia tốc đột ngột với mặt nạ khoảng trống (`gap masking`):
+  $$\mathcal{L}_{accel} = \sum_{t} \mathcal{H}_\delta(X_{t-1} - 2X_t + X_{t+1}) \cdot \mathbb{I}(\Delta t_1 = 1 \land \Delta t_2 = 1)$$
+- `smoothness_weight: 0.15`, `velocity_weight: 0.0`.
+
+### C2: Sequence Refinement Accel + Velocity ([C2_refine_accel_vel.yml](../configs/ablation/C2_refine_accel_vel.yml))
+- Kế thừa C1, bổ sung thành phần cản vận tốc liên khung hình:
+  $$\mathcal{L}_{vel} = \sum_{t} \mathcal{H}_\delta(X_t - X_{t-1}) \cdot \mathbb{I}(\Delta t = 1)$$
+- `smoothness_weight: 0.15`, `velocity_weight: 0.03`.
+
+---
+
+## 4. Cách Thực Thi Thử Nghiệm
+
+### Chạy toàn bộ ma trận Ablation trên vận động viên S1:
 ```powershell
 python scripts/run_ablation.py -S1
 ```
 
-### Chạy cho tất cả các đối tượng:
+### Chạy trên toàn bộ các vận động viên (S1, S2, S3):
 ```powershell
 python scripts/run_ablation.py
 ```
 
-Kết quả tổng hợp dạng bảng và chi tiết từng vận động viên sẽ tự động lưu tại:
-- `outputs/ablation_summary.csv`
-- Bảng chi tiết từng config: `outputs/ablation/01_dlt.csv`, `02_...csv`, v.v.
+### Sinh lại các file cấu hình YAML:
+```powershell
+python scripts/make_ablation_configs.py
+```
+
+Kết quả tổng hợp tự động xuất ra:
+- `outputs/ablation_summary.csv`: Bảng tổng hợp các chỉ số Raw, Rigid, Seq-Rot, PA và 95% Bootstrap CI theo từng chuyển động.
+- `outputs/ablation/<Config>_sequence_metrics.csv`: Báo cáo chẩn đoán cấp chuỗi cho từng cặp camera.
 
 ---
 
-## 4. Các Giả Thuyết Thất Bại & Bài Học Khoa Học
-
-Trong quá trình nghiên cứu, một số hướng tiếp cận trực quan đã được thử nghiệm và bị bác bỏ dựa trên số liệu thực nghiệm:
+## 5. Phân Tích Thất Bại & Bài Học Khoa Học
 
 | Hướng tiếp cận | Giả định ban đầu | Kết quả thực tế | Lý do thất bại |
 | :--- | :--- | :--- | :--- |
-| **`bone_prior: sequence_median`** | Lấy trung vị xương từ DLT của chính video để thích nghi theo cá nhân. | Làm tăng sai số **+1.7 mm** so với dùng H36M. | DLT từ 2 camera bị co giãn chiều sâu (`depth ambiguity`), khiến trung vị xương bị sai lệch tỉ lệ cơ thể. |
-| **`sync_local_radius: 2`** | Cho phép tìm kiếm cục bộ offset $\pm 2$ frame để bắt đúng frame nhất. | Làm tăng sai số **+1.20 mm** (từ 58.77 lên 59.97 mm). | Tìm kiếm cục bộ độc lập từng frame không có penalty gây rung lắc lệch pha 50ms giữa các frame kề nhau. |
-| **Ràng buộc cột sống thẳng (Rigid Torso)** | Ép Pelvis $\to$ Thorax $\to$ Head thành đường thẳng cố định. | Làm tăng sai số **+4.48 mm** (từ 59.97 lên 64.44 mm). | VĐV uốn cong lưng và gập người mạnh khi nhảy xoay, ép thẳng làm biến dạng tư thế thực. |
-| **Ray Angle Modulation** | Nhân trọng số hàm mất mát tia theo $\sin(\theta)$ góc hội tụ giữa 2 camera. | Chỉ giảm **-0.33 mm** (59.97 $\to$ 59.64 mm). | Không bù đắp được chi phí tính toán tích có hướng và tăng thêm siêu tham số (YAGNI). |
+| **`bone_prior: sequence_median`** | Lấy trung vị xương từ DLT của chính video để thích nghi theo từng cá nhân. | Tăng sai số **+1.7 mm** so với dùng prior H36M. | DLT từ 2 camera bị co giãn chiều sâu (`depth ambiguity`), khiến trung vị xương bị sai lệch tỉ lệ cơ thể nghiêm trọng. |
+| **`sync_local_radius: 2`** | Cho phép tìm kiếm cục bộ offset $\pm 2$ frame để bắt frame tốt nhất. | Tăng sai số **+1.20 mm** (từ 58.77 lên 59.97 mm). | Tìm kiếm cục bộ độc lập từng frame không có phạt chuyển trạng thái gây rung lắc pha 50ms giữa các frame kề nhau. Đặt `sync_local_radius: 0` để khóa đường đi Viterbi DP mượt mà. |
+| **Ràng buộc cột sống cứng (Rigid Torso)** | Ép Pelvis $\to$ Thorax $\to$ Head thành đoạn thẳng cố định. | Tăng sai số **+4.48 mm** (từ 59.97 lên 64.44 mm). | Vận động viên uốn lưng và gập người mạnh trong các động tác thể thao phức tạp, ràng buộc cứng gây méo mó tư thế thực. |
+| **Ray Angle Modulation** | Nhân trọng số hàm mất mát tia theo $\sin(\theta)$ góc hội tụ 2 camera. | Chỉ giảm **-0.33 mm** (59.97 $\to$ 59.64 mm). | Không bù đắp được chi phí tính toán tích có hướng và tăng thêm siêu tham số không cần thiết (YAGNI). |

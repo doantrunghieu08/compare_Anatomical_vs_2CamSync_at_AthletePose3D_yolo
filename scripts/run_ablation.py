@@ -18,11 +18,12 @@ from athlete_pose3d.main import run_benchmark
 
 
 DEFAULT_CONFIGS = [
-    "configs/ablation/01_dlt.yml",
-    "configs/ablation/02_anatomical_generic_height.yml",
-    "configs/ablation/03_anatomical_calibrated_height.yml",
-    "configs/ablation/04_sequence_refine.yml",
-    "configs/ablation/05_full_pipeline.yml",
+    "configs/ablation/A1_dlt_generic.yml",
+    "configs/ablation/A2_dlt_calibrated.yml",
+    "configs/ablation/B1_anat_generic.yml",
+    "configs/ablation/B2_anat_calibrated.yml",
+    "configs/ablation/C1_refine_accel.yml",
+    "configs/ablation/C2_refine_accel_vel.yml",
 ]
 
 
@@ -49,54 +50,97 @@ def extract_subjects(args) -> list[str] | None:
     return subs if subs else None
 
 
+def bootstrap_ci(deltas, n=5000, seed=0) -> tuple[float, list[float]]:
+    x = np.asarray(deltas, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) == 0:
+        return 0.0, [0.0, 0.0]
+    rng = np.random.default_rng(seed)
+    means = rng.choice(x, size=(n, len(x)), replace=True).mean(axis=1)
+    return float(x.mean()), np.percentile(means, [2.5, 97.5]).round(2).tolist()
+
+
 def summarize_results_csv(csv_path: Path, config_name: str, elapsed_sec: float) -> list[dict]:
     if not csv_path.exists():
         return []
     df = pd.read_csv(csv_path)
-    # Filter out any summary lines if present
+    # Filter out summary / footer rows
     df = df[~df["Time"].astype(str).str.startswith(("Summary", "End"), na=False)].copy()
     if df.empty:
         return []
 
-    for col in ("Baseline_DLT_MPJPE", "Baseline_DLT_PA", "Selected_Method_MPJPE", "Selected_Method_PA"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in (
+        "Baseline_DLT_Raw_MPJPE", "Baseline_DLT_Rigid_MPJPE", "Baseline_DLT_MPJPE", "Baseline_DLT_PA",
+        "Selected_Method_Raw_MPJPE", "Selected_Method_Rigid_MPJPE", "Selected_Method_MPJPE", "Selected_Method_PA"
+    ):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        elif col == "Selected_Method_Rigid_MPJPE" and "Selected_Method_MPJPE" in df.columns:
+            df[col] = pd.to_numeric(df["Selected_Method_MPJPE"], errors="coerce")
+        elif col == "Baseline_DLT_Rigid_MPJPE" and "Baseline_DLT_MPJPE" in df.columns:
+            df[col] = pd.to_numeric(df["Baseline_DLT_MPJPE"], errors="coerce")
+
+    # Read sequence metrics if available
+    seq_csv = csv_path.parent / f"{csv_path.stem}_sequence_metrics.csv"
+    seq_rot_mean = float("nan")
+    if seq_csv.exists():
+        try:
+            seq_df = pd.read_csv(seq_csv)
+            if "Method_SeqRot_MPJPE" in seq_df.columns:
+                seq_rot_mean = float(pd.to_numeric(seq_df["Method_SeqRot_MPJPE"], errors="coerce").mean())
+        except Exception:
+            pass
+
+    # Per-motion bootstrap delta vs baseline
+    per_motion_d = []
+    if "Selected_Method_MPJPE" in df.columns and "Baseline_DLT_MPJPE" in df.columns:
+        valid_df = df.dropna(subset=["Selected_Method_MPJPE", "Baseline_DLT_MPJPE"])
+        if not valid_df.empty and "Subject" in valid_df.columns and "Motion" in valid_df.columns:
+            diff_series = valid_df.assign(d=valid_df["Baseline_DLT_MPJPE"] - valid_df["Selected_Method_MPJPE"])
+            per_motion_d = diff_series.groupby(["Subject", "Motion"])["d"].mean().values
+
+    mean_gain, ci_95 = bootstrap_ci(per_motion_d)
 
     records = []
-    # Overall summary row
-    dlt_m, dlt_p = df["Baseline_DLT_MPJPE"].mean(), df["Baseline_DLT_PA"].mean()
-    met_m, met_p = df["Selected_Method_MPJPE"].mean(), df["Selected_Method_PA"].mean()
-    delta_m = (dlt_m - met_m) / dlt_m * 100.0 if dlt_m > 0 else 0.0
-    delta_p = (dlt_p - met_p) / dlt_p * 100.0 if dlt_p > 0 else 0.0
+    raw_m = df["Selected_Method_Raw_MPJPE"].mean() if "Selected_Method_Raw_MPJPE" in df.columns else float("nan")
+    rigid_m = df["Selected_Method_Rigid_MPJPE"].mean() if "Selected_Method_Rigid_MPJPE" in df.columns else df["Selected_Method_MPJPE"].mean()
+    pa_m = df["Selected_Method_PA"].mean()
+    dlt_rigid = df["Baseline_DLT_Rigid_MPJPE"].mean() if "Baseline_DLT_Rigid_MPJPE" in df.columns else df["Baseline_DLT_MPJPE"].mean()
+    dlt_pa = df["Baseline_DLT_PA"].mean()
 
     records.append({
         "Config": config_name,
         "Subject": "ALL",
         "Frames": len(df),
-        "DLT_MPJPE": round(float(dlt_m), 2),
-        "Method_MPJPE": round(float(met_m), 2),
-        "Delta_MPJPE_%": round(float(delta_m), 2),
-        "DLT_PA": round(float(dlt_p), 2),
-        "Method_PA": round(float(met_p), 2),
-        "Delta_PA_%": round(float(delta_p), 2),
+        "Method_Raw": round(float(raw_m), 2) if np.isfinite(raw_m) else "N/A",
+        "Method_Rigid": round(float(rigid_m), 2),
+        "Method_SeqRot": round(float(seq_rot_mean), 2) if np.isfinite(seq_rot_mean) else "N/A",
+        "Method_PA": round(float(pa_m), 2),
+        "DLT_Rigid": round(float(dlt_rigid), 2),
+        "DLT_PA": round(float(dlt_pa), 2),
+        "Gain_vs_DLT": f"{mean_gain:+.2f} mm [95% CI: {ci_95[0]}, {ci_95[1]}]" if len(per_motion_d) else "N/A",
         "Elapsed_s": round(elapsed_sec, 1),
     })
 
     # Per-subject breakdown
     for subj, sub_df in df.groupby("Subject"):
-        s_dlt_m, s_dlt_p = sub_df["Baseline_DLT_MPJPE"].mean(), sub_df["Baseline_DLT_PA"].mean()
-        s_met_m, s_met_p = sub_df["Selected_Method_MPJPE"].mean(), sub_df["Selected_Method_PA"].mean()
-        s_del_m = (s_dlt_m - s_met_m) / s_dlt_m * 100.0 if s_dlt_m > 0 else 0.0
-        s_del_p = (s_dlt_p - s_met_p) / s_dlt_p * 100.0 if s_dlt_p > 0 else 0.0
+        s_raw = sub_df["Selected_Method_Raw_MPJPE"].mean() if "Selected_Method_Raw_MPJPE" in sub_df.columns else float("nan")
+        s_rigid = sub_df["Selected_Method_Rigid_MPJPE"].mean() if "Selected_Method_Rigid_MPJPE" in sub_df.columns else sub_df["Selected_Method_MPJPE"].mean()
+        s_pa = sub_df["Selected_Method_PA"].mean()
+        s_dlt_rigid = sub_df["Baseline_DLT_Rigid_MPJPE"].mean() if "Baseline_DLT_Rigid_MPJPE" in sub_df.columns else sub_df["Baseline_DLT_MPJPE"].mean()
+        s_dlt_pa = sub_df["Baseline_DLT_PA"].mean()
+
         records.append({
             "Config": config_name,
             "Subject": str(subj),
             "Frames": len(sub_df),
-            "DLT_MPJPE": round(float(s_dlt_m), 2),
-            "Method_MPJPE": round(float(s_met_m), 2),
-            "Delta_MPJPE_%": round(float(s_del_m), 2),
-            "DLT_PA": round(float(s_dlt_p), 2),
-            "Method_PA": round(float(s_met_p), 2),
-            "Delta_PA_%": round(float(s_del_p), 2),
+            "Method_Raw": round(float(s_raw), 2) if np.isfinite(s_raw) else "N/A",
+            "Method_Rigid": round(float(s_rigid), 2),
+            "Method_SeqRot": "-",
+            "Method_PA": round(float(s_pa), 2),
+            "DLT_Rigid": round(float(s_dlt_rigid), 2),
+            "DLT_PA": round(float(s_dlt_pa), 2),
+            "Gain_vs_DLT": "-",
             "Elapsed_s": round(elapsed_sec, 1),
         })
 
@@ -143,9 +187,11 @@ def main():
             if all_rec:
                 print(
                     f"[{cfg_name}] Frames={all_rec['Frames']} | "
-                    f"MPJPE: {all_rec['DLT_MPJPE']} -> {all_rec['Method_MPJPE']} ({all_rec['Delta_MPJPE_%']:+.2f}%) | "
-                    f"PA: {all_rec['DLT_PA']} -> {all_rec['Method_PA']} ({all_rec['Delta_PA_%']:+.2f}%) | "
-                    f"Time={elapsed:.1f}s"
+                    f"Raw: {all_rec['Method_Raw']} | "
+                    f"Rigid: {all_rec['DLT_Rigid']} -> {all_rec['Method_Rigid']} | "
+                    f"SeqRot: {all_rec['Method_SeqRot']} | "
+                    f"PA: {all_rec['DLT_PA']} -> {all_rec['Method_PA']} | "
+                    f"Gain: {all_rec['Gain_vs_DLT']} | Time={elapsed:.1f}s"
                 )
         except Exception as e:
             print(f"[ERROR] Failed to run {cfg_name}: {e}")

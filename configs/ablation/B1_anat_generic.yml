@@ -1,4 +1,3 @@
-# Baseline: Pure DLT without anatomical constraints or sequence refinement
 input:
   dataset_root: inputs
   pose2d_root: inputs
@@ -12,7 +11,7 @@ input:
   pose_cache_limit: 550
   minimum_manifest_confidence: 0.6
 output:
-  results_csv: outputs/ablation/01_dlt.csv
+  results_csv: outputs/ablation/B1_anat_generic.csv
   overwrite: true
 pipeline:
   max_pairs: 15
@@ -31,7 +30,7 @@ pipeline:
   dynamic_transition_weight: 7.5
   minimum_joint_confidence: 0.3
   minimum_valid_joints: 8
-  subject_height_mm: auto
+  subject_height_mm: 1730.0
   subject_heights:
     S1: 1591.0
     S2: 1553.0
@@ -175,11 +174,14 @@ pipeline:
     root_weight: 0.8
     bone_weight: 0.7
     reprojection_weight: 0.46
-    smoothness_weight: 0.06
+    smoothness_weight: 0.15
     velocity_weight: 0.0
     symmetry_weight: 0.12
     max_evaluations: 30
     max_drift: 360.0
 method:
-  name: dlt
-  options: {}
+  name: anatomical
+  options:
+    iterations: 80
+    bone_weight: 1.0
+    lr: 0.1

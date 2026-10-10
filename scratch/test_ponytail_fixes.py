@@ -308,7 +308,7 @@ def test_12_reporting_nan_protection():
     print("--- Test 12: Reporting NaN protection in summary row ---")
     sys_info = SystemInfo(
         python_version="3.11", os_type="Windows", os_version="10",
-        compute_device="CPU", cpu_cores=8, user="Test",
+        compute_device="CPU", cpu_cores=8,
     )
     results = [
         {"mpjpe": 45.0, "pa_mpjpe": 30.0, "baseline_dlt_mpjpe": 50.0, "baseline_dlt_pa": 35.0},
@@ -317,9 +317,9 @@ def test_12_reporting_nan_protection():
     ]
     summary = _build_summary_row(results, sys_info, "v1.0")
     assert summary is not None
-    # summary[8] is s_m, summary[9] is s_p
-    assert summary[8] == 50.0, f"Expected mean mpjpe 50.0, got {summary[8]}"
-    assert summary[9] == 35.0, f"Expected mean pa_mpjpe 35.0, got {summary[9]}"
+    # summary[12] is s_m, summary[13] is s_p
+    assert summary[12] == 50.0, f"Expected mean mpjpe 50.0, got {summary[12]}"
+    assert summary[13] == 35.0, f"Expected mean pa_mpjpe 35.0, got {summary[13]}"
     print("PASS: Summary row correctly computes non-NaN means when some frames are NaN.")
 
 

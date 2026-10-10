@@ -1,4 +1,3 @@
-# Step 3: Anatomical constraints with GT-calibrated subject heights (S1: 1591, S2: 1553, S3: 1733)
 input:
   dataset_root: inputs
   pose2d_root: inputs
@@ -12,7 +11,7 @@ input:
   pose_cache_limit: 550
   minimum_manifest_confidence: 0.6
 output:
-  results_csv: outputs/ablation/03_anatomical_calibrated_height.csv
+  results_csv: outputs/ablation/A2_dlt_calibrated.csv
   overwrite: true
 pipeline:
   max_pairs: 15
@@ -175,13 +174,11 @@ pipeline:
     root_weight: 0.8
     bone_weight: 0.7
     reprojection_weight: 0.46
-    smoothness_weight: 0.06
+    smoothness_weight: 0.15
     velocity_weight: 0.0
     symmetry_weight: 0.12
     max_evaluations: 30
     max_drift: 360.0
 method:
-  name: anatomical
-  options:
-    iterations: 80
-    bone_weight: 1.0
+  name: dlt
+  options: {}

@@ -363,7 +363,7 @@ def _record_evaluated_pairs_csv(pair_info, evaluated_all, best, csv_path):
 def select_best_pair(
     pair_info, repository: PoseRepository, score_options, valid_videos=None, max_candidates=None,
     max_offset=45, sync_samples=5, coarse_step=7, minimum_valid_ratio=0.5,
-    validation_radius=2, record_all_csv: str | Path | None = "outputs/all_camera_pairs.csv",
+    validation_radius=2, record_all_csv: str | Path | None = None,
 ):
     best = None
     entries = _candidate_pairs(pair_info, repository)
@@ -429,8 +429,8 @@ def _optimal_offset_path(cost_matrix, offset_array, transition_weight):
     dynamic = np.zeros_like(cost_matrix)
     backtrack = np.zeros(cost_matrix.shape, dtype=int)
     dynamic[0] = cost_matrix[0]
+    offset_change = np.abs(offset_array[:, None] - offset_array[None, :])
     for time in range(1, cost_matrix.shape[0]):
-        offset_change = np.abs(offset_array[:, None] - offset_array[None, :])
         transition = dynamic[time - 1][:, None] + transition_weight * offset_change
         backtrack[time] = np.argmin(transition, axis=0)
         dynamic[time] = cost_matrix[time] + np.min(transition, axis=0)

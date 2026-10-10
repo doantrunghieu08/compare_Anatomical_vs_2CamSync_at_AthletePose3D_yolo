@@ -103,23 +103,24 @@ REFINED_METHOD = "TwoCam DynamicSync + SMPLifyStyle"
 METHOD_LABELS = {
     "dlt": "DLT (baseline)",
     "confidence_algebraic": "Conf-Algebraic",
-    "ransac_dlt": "RANSAC-DLT",
+    "ransac_dlt": "Reweighted-DLT",
     "iterative_refine": "Iterative Refine",
-    "anatomical": "Anatomical (SOTA)",
+    "anatomical": "Anatomical",
     "physics_refine": "Physics-Refine",
 }
 
 REPORT_HEADERS = [
     "Time", "Motion", "Subject", "Cam_A", "Cam_B", "Frame",
-    "Baseline_DLT_MPJPE", "Baseline_DLT_PA", "Selected_Method_MPJPE",
+    "Baseline_DLT_Raw_MPJPE", "Baseline_DLT_Rigid_MPJPE", "Baseline_DLT_MPJPE", "Baseline_DLT_PA",
+    "Selected_Method_Raw_MPJPE", "Selected_Method_Rigid_MPJPE", "Selected_Method_MPJPE",
     "Selected_Method_PA", "Delta_MPJPE_pct", "Delta_PA_pct",
     "PA_Clear", "PA_Derived",
     "Mean_Confidence", "MPJPE_Unoccluded", "MPJPE_Occluded", "Num_Occluded_Joints",
-    "Belief_Master", "Belief_Slave", "Belief_Fusion",
+    "Conf_A", "Conf_B", "Stereo_Conf",
     "Best_Method",
     "Global_Sync_Delta", "Dynamic_Sync_Delta", "Python_Version",
     "OS_Type", "OS_Version", "Compute_Device", "CPU cores",
-    "User_Info", "Code version", "Notes",
+    "Code version", "Notes",
 ]
 
 

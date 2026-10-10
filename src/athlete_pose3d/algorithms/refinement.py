@@ -8,7 +8,7 @@ import torch
 from ..settings import REFINED_METHOD, TWOCAM_METHOD
 from .geometry import (
     H36M_BONES, H36M_SYMMETRIC_BONES,
-    evaluate_joint_groups, mpjpe, pa_mpjpe,
+    evaluate_joint_groups, mpjpe, raw_mpjpe, rigid_mpjpe, pa_mpjpe,
     h36m_bone_lengths_from_height, resolve_subject_height,
 )
 
@@ -23,7 +23,7 @@ def _sequence_bone_targets(sequence, bone_lengths=None):
         prior = (bone_lengths or {}).get((a, b), 0)
         if not len(lengths) and prior <= 0:
             continue
-        # ponytail: prioritize calibrated prior if provided, fallback to median lengths
+        # Prioritize calibrated prior if provided, fallback to median lengths
         median = float(prior) if prior and prior > 0 else (float(np.median(lengths)) if len(lengths) else 0.0)
         targets[(a, b)] = median
     return targets
@@ -88,7 +88,11 @@ def _optimize_sequence_torch(sequence, items, targets, weights, max_iterations):
         ))
 
     frame_nums = np.array([res["frame"] for _, res in items])
-    is_contiguous = len(frame_nums) >= 3 and bool(np.all(np.diff(frame_nums) == 1))
+    gap_ok = (
+        torch.as_tensor(np.diff(frame_nums) == 1, dtype=torch.float32, device=device)
+        if len(frame_nums) > 1
+        else torch.empty(0, device=device)
+    )
 
     def closure():
         optimizer.zero_grad()
@@ -103,17 +107,20 @@ def _optimize_sequence_torch(sequence, items, targets, weights, max_iterations):
         for projections, points, confidence in camera_data:
             distance = _torch_ray_distances(poses, projections, points)
             residuals.append((weights["reprojection"] * confidence * distance).reshape(-1))
-        if is_contiguous:
-            centered = poses - poses[:, :1]
-            # Gia tốc (Acceleration / 2nd-order derivative: x_{t-1} - 2x_t + x_{t+1})
-            accel_w = weights.get("acceleration", weights.get("smoothness", 0.0))
-            if accel_w > 0:
-                accel = centered[:-2] - 2.0 * centered[1:-1] + centered[2:]
+
+        centered = poses - poses[:, :1]
+        accel_w = weights.get("acceleration", weights.get("smoothness", 0.0))
+        if len(frame_nums) >= 3 and accel_w > 0:
+            acc_ok = gap_ok[:-1] * gap_ok[1:]
+            if bool(acc_ok.any()):
+                accel = (centered[:-2] - 2.0 * centered[1:-1] + centered[2:]) * acc_ok[:, None, None]
                 residuals.append((accel_w * accel).reshape(-1))
-            # Vận tốc (Velocity / 1st-order derivative: x_t - x_{t-1})
-            if weights.get("velocity", 0.0) > 0:
-                vel = centered[1:] - centered[:-1]
-                residuals.append((weights["velocity"] * vel).reshape(-1))
+        vel_w = weights.get("velocity", 0.0)
+        if len(frame_nums) >= 2 and vel_w > 0:
+            if bool(gap_ok.any()):
+                vel = (centered[1:] - centered[:-1]) * gap_ok[:, None, None]
+                residuals.append((vel_w * vel).reshape(-1))
+
         loss = _robust_cost(torch.cat(residuals))
         loss.backward()
         return loss
@@ -127,10 +134,11 @@ def optimize_sequence(
     root_weight=1.0, bone_weight=0.70, reprojection_weight=0.42,
     smoothness_weight=0.060, velocity_weight=0.0, acceleration_weight=None,
     symmetry_weight=0.12, max_evaluations=90, max_drift=220.0,
+    return_status: bool = False,
 ):
     sequence = np.array([result["all_methods"][source_method]["recon_3d"] for _, result in items], dtype=float)
     if not len(sequence):
-        return sequence
+        return (sequence, False) if return_status else sequence
     targets = _sequence_bone_targets(sequence, bone_lengths)
     accel_w = acceleration_weight if acceleration_weight is not None else smoothness_weight
     weights = {
@@ -140,8 +148,8 @@ def optimize_sequence(
     }
     optimized = _optimize_sequence_torch(sequence, items, targets, weights, max_evaluations)
     if not np.isfinite(optimized).all() or np.median(np.linalg.norm(optimized - sequence, axis=2)) > max_drift:
-        return sequence
-    return optimized
+        return (sequence, False) if return_status else sequence
+    return (optimized, True) if return_status else optimized
 
 
 def refine_results(
@@ -161,23 +169,38 @@ def refine_results(
 
     for (subject, motion, cam_a, cam_b), items in grouped.items():
         items.sort(key=lambda item: item[1]["frame"])
+        frames = np.array([r["frame"] for _, r in items])
+        n_gaps = int(np.sum(np.diff(frames) != 1)) if len(frames) > 1 else 0
+        if n_gaps > 0:
+            print(f"[refine] {subject}/{motion} frames={len(frames)} gaps={n_gaps}")
+
         subj_bones = optimization_options.get("bone_lengths")
         if subject_heights and subject in subject_heights:
             subj_bones = h36m_bone_lengths_from_height(resolve_subject_height(subject, subject_height_mm, subject_heights))
         opts = {**optimization_options, "bone_lengths": subj_bones}
         refined = []
+        applied_flags = []
         for start in range(0, len(items), chunk_size):
-            refined.extend(
-                optimize_sequence(items[start : start + chunk_size], source_method, **opts)
+            chunk_poses, was_applied = optimize_sequence(
+                items[start : start + chunk_size], source_method, return_status=True, **opts
             )
-        for (index, result), prediction in zip(items, refined):
+            refined.extend(chunk_poses)
+            applied_flags.extend([was_applied] * len(chunk_poses))
+
+        for (index, result), prediction, was_applied in zip(items, refined, applied_flags):
+            raw = raw_mpjpe(prediction, result["gt_3d"])
+            rigid = rigid_mpjpe(prediction, result["gt_3d"])
+            pa = pa_mpjpe(prediction, result["gt_3d"])
             groups = evaluate_joint_groups(prediction, result["gt_3d"])
             metrics = {
                 "recon_3d": prediction,
-                "mpjpe": mpjpe(prediction, result["gt_3d"]),
-                "pa_mpjpe": pa_mpjpe(prediction, result["gt_3d"]),
+                "mpjpe": rigid,
+                "rigid_mpjpe": rigid,
+                "raw_mpjpe": raw,
+                "pa_mpjpe": pa,
                 "pa_clear": groups["pa_clear"],
                 "pa_derived": groups["pa_derived"],
+                "refine_applied": was_applied,
             }
             results[index]["all_methods"][target_method] = metrics
             results[index].update(metrics, best_method=target_method)

@@ -30,5 +30,11 @@ scratch/dummy_meta.json
 .idea/
 .vscode/
 *.swp
+# Build & distribution
+*.egg-info/
+build/
+dist/
+
 # Added by code-review-graph
 .code-review-graph/
+

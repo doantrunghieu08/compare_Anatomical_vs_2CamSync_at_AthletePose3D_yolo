@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+import inspect
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -12,6 +11,8 @@ from .algorithms.geometry import (
     estimate_bone_lengths_from_poses,
     h36m_bone_lengths_from_height,
     mpjpe,
+    raw_mpjpe,
+    rigid_mpjpe,
     pa_mpjpe,
     evaluate_joint_groups,
     resolve_subject_height,
@@ -34,7 +35,7 @@ from .settings import BenchmarkConfig, method_label
 def _sample_key_frames(frames: list[int], limit: int) -> list[int]:
     if limit <= 0 or len(frames) <= limit:
         return frames
-    # ponytail: contiguous center window to preserve temporal continuity
+    # Contiguous center window to preserve temporal continuity
     start = max(0, (len(frames) - limit) // 2)
     return frames[start : start + limit]
 
@@ -98,7 +99,7 @@ def _selected_triangulation(config: BenchmarkConfig):
         "confidence_algebraic": set(),
         "ransac_dlt": {"reprojection_threshold"},
         "iterative_refine": {"iterations"},
-        "anatomical": {"iterations", "bone_weight"},
+        "anatomical": {"iterations", "bone_weight", "lr"},
         "physics_refine": {
             "iterations", "bone_weight", "ground_z", "lr", "use_nimble_ik",
             "data_weight", "anchor_weight", "sym_weight", "bone_reliability_modulation", "delta_ray_mm",
@@ -215,7 +216,7 @@ def _fps_scaled_sync_params(pair_info, config):
         "fps": fps,
         "max_offset": int(round(config.sync_max_offset * scale)),
         "coarse_step": max(1, int(round(config.sync_coarse_step * scale))),
-        "local_radius": max(1, int(round(config.sync_local_radius * scale))),
+        "local_radius": max(0, int(round(config.sync_local_radius * scale))),
         "dynamic_radius": max(1, int(round(config.dynamic_local_radius * scale))),
         "transition_weight": config.dynamic_transition_weight * (1.0 / scale),
     }
@@ -269,25 +270,34 @@ def _frame_inputs(context, frame, repository, config):
     return left, right, dynamic_offset, local_offset, sync_score, dynamic_score, ground_truth
 
 
+def _accepts_param(fn, name: str) -> bool:
+    target = fn.func if isinstance(fn, partial) else fn
+    try:
+        params = inspect.signature(target).parameters.values()
+        return any(p.name == name or p.kind is p.VAR_KEYWORD for p in params)
+    except (ValueError, TypeError):
+        return False
+
+
 def _evaluate_methods(methods, context, left, right, ground_truth, prev_pose_3d=None):
     results = {}
     for name, triangulate in methods.items():
-        try:
-            reconstruction = triangulate(
-                context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
-                left["conf_h36m"], right["conf_h36m"],
-                prev_pose_3d=prev_pose_3d,
-            )
-        except TypeError:
-            reconstruction = triangulate(
-                context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
-                left["conf_h36m"], right["conf_h36m"],
-            )
+        kwargs = {"prev_pose_3d": prev_pose_3d} if _accepts_param(triangulate, "prev_pose_3d") else {}
+        reconstruction = triangulate(
+            context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"],
+            left["conf_h36m"], right["conf_h36m"],
+            **kwargs,
+        )
         groups = evaluate_joint_groups(reconstruction, ground_truth)
+        raw = raw_mpjpe(reconstruction, ground_truth)
+        rigid = rigid_mpjpe(reconstruction, ground_truth)
+        pa = pa_mpjpe(reconstruction, ground_truth)
         results[name] = {
             "recon_3d": reconstruction,
-            "mpjpe": mpjpe(reconstruction, ground_truth),
-            "pa_mpjpe": pa_mpjpe(reconstruction, ground_truth),
+            "mpjpe": rigid,
+            "rigid_mpjpe": rigid,
+            "raw_mpjpe": raw,
+            "pa_mpjpe": pa,
             "pa_clear": groups["pa_clear"],
             "pa_derived": groups["pa_derived"],
         }
@@ -295,13 +305,18 @@ def _evaluate_methods(methods, context, left, right, ground_truth, prev_pose_3d=
 
 
 def _dlt_synced_baseline(context, left, right, ground_truth):
-    """Pure DLT triangulation on the DTW/dynamically-synchronized pose pair."""
+    """Pure DLT triangulation on the dynamically-synchronized pose pair."""
     recon = triangulate_dlt(context["p1"], context["p2"], left["kps_h36m"], right["kps_h36m"])
     groups = evaluate_joint_groups(recon, ground_truth)
+    raw = raw_mpjpe(recon, ground_truth)
+    rigid = rigid_mpjpe(recon, ground_truth)
+    pa = pa_mpjpe(recon, ground_truth)
     return {
         "recon_3d": recon,
-        "mpjpe": mpjpe(recon, ground_truth),
-        "pa_mpjpe": pa_mpjpe(recon, ground_truth),
+        "mpjpe": rigid,
+        "rigid_mpjpe": rigid,
+        "raw_mpjpe": raw,
+        "pa_mpjpe": pa,
         "pa_clear": groups["pa_clear"],
         "pa_derived": groups["pa_derived"],
     }
@@ -311,6 +326,8 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
     left, right, dynamic_offset, local_offset, sync_score, dynamic_score, ground_truth = inputs
     primary, pair, best = method_results[selected_label], context["pair_info"], context["best_pair"]
     dlt_mpjpe = dlt_baseline["mpjpe"] if dlt_baseline else float("nan")
+    dlt_rigid = dlt_baseline.get("rigid_mpjpe", dlt_mpjpe) if dlt_baseline else float("nan")
+    dlt_raw = dlt_baseline.get("raw_mpjpe", float("nan")) if dlt_baseline else float("nan")
     dlt_pa = dlt_baseline["pa_mpjpe"] if dlt_baseline else float("nan")
 
     occ_info = detect_stereo_occlusions(
@@ -324,7 +341,10 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
         "motion": pair["motion"], "subject": pair["subject"],
         "cam_a": context["camera_a"]["cam_id"], "cam_b": context["camera_b"]["cam_id"],
         "frame": frame, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-        "mpjpe": primary["mpjpe"], "pa_mpjpe": primary["pa_mpjpe"],
+        "mpjpe": primary["mpjpe"],
+        "rigid_mpjpe": primary.get("rigid_mpjpe", primary["mpjpe"]),
+        "raw_mpjpe": primary.get("raw_mpjpe", float("nan")),
+        "pa_mpjpe": primary["pa_mpjpe"],
         "pa_clear": primary.get("pa_clear", float("nan")),
         "pa_derived": primary.get("pa_derived", float("nan")),
         "gt_3d": ground_truth, "recon_3d": primary["recon_3d"],
@@ -336,9 +356,9 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
         "kps2d_a_h36m": left["kps_h36m"], "kps2d_b_h36m": right["kps_h36m"],
         "conf_a_h36m": occ_info["conf_a"], "conf_b_h36m": occ_info["conf_b"],
         "stereo_conf_h36m": occ_info["stereo_confidence"],
-        "belief_master": occ_info["conf_a"],
-        "belief_slave": occ_info["conf_b"],
-        "belief_fusion": occ_info["stereo_confidence"],
+        "conf_master": occ_info["conf_a"],
+        "conf_slave": occ_info["conf_b"],
+        "stereo_fusion": occ_info["stereo_confidence"],
         "occluded_mask": occ_info["occluded_mask"],
         "is_outlier": occ_info["is_outlier"],
         "global_sync_delta": best["delta"], "dynamic_sync_delta": dynamic_offset,
@@ -349,6 +369,8 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
             "DLT (baseline)": dlt_baseline or {},
         },
         "baseline_dlt_mpjpe": dlt_mpjpe,
+        "baseline_dlt_rigid_mpjpe": dlt_rigid,
+        "baseline_dlt_raw_mpjpe": dlt_raw,
         "baseline_dlt_pa": dlt_pa,
         "baseline_dlt_pa_clear": dlt_baseline.get("pa_clear", float("nan")) if dlt_baseline else float("nan"),
         "baseline_dlt_pa_derived": dlt_baseline.get("pa_derived", float("nan")) if dlt_baseline else float("nan"),
@@ -385,10 +407,13 @@ def _process_motion(pair_info, repository, config, valid_videos, selected_label)
     )
     results = []
     prev_recon_3d = None
+    prev_frame = None
     for frame in context["frames"]:
         inputs = _frame_inputs(context, frame, repository, config)
         if inputs is None:
             continue
+        if prev_frame is not None and frame != prev_frame + 1:
+            prev_recon_3d = None
         left, right, ground_truth = inputs[0], inputs[1], inputs[-1]
         dlt_baseline = _dlt_synced_baseline(context, left, right, ground_truth)
         method_results = _evaluate_methods(
@@ -397,6 +422,7 @@ def _process_motion(pair_info, repository, config, valid_videos, selected_label)
         )
         if selected_label in method_results and "recon_3d" in method_results[selected_label]:
             prev_recon_3d = method_results[selected_label]["recon_3d"]
+        prev_frame = frame
         results.append(_build_frame_result(context, frame, inputs, method_results, selected_label, dlt_baseline))
     return results
 

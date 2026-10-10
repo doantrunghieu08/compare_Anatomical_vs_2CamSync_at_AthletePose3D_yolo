@@ -143,7 +143,7 @@ def uncalibrated_triangulation(
     valid = np.isfinite(pts1).all(-1) & np.isfinite(pts2).all(-1) & (np.minimum(c1, c2) >= 0.05)
     flat1, flat2 = pts1.reshape(-1, 2), pts2.reshape(-1, 2)
     flat_c1, flat_c2, flat_valid = c1.ravel(), c2.ravel(), valid.ravel()
-    # ponytail: only use direct COCO joints (CLEAR_JOINTS) for F estimation to avoid synthetic joint bias
+    # Only use direct COCO joints (CLEAR_JOINTS) for F estimation to avoid synthetic joint bias
     if pts1.shape[1] == 17:
         clear_pts1 = pts1[:, CLEAR_JOINTS, :].reshape(-1, 2)
         clear_pts2 = pts2[:, CLEAR_JOINTS, :].reshape(-1, 2)
@@ -157,7 +157,7 @@ def uncalibrated_triangulation(
     else:
         fundamental = estimate_fundamental_matrix(flat1[flat_valid], flat2[flat_valid], flat_c1[flat_valid], flat_c2[flat_valid])
 
-    # ponytail: if f_scale is auto, scan candidates for minimum bone instability
+    # When f_scale is auto, scan candidates for minimum bone instability
     if isinstance(f_scale, str) and f_scale.lower() == "auto":
         best_scale, best_score = 1.2, float("inf")
         for k in np.linspace(0.8, 1.8, 11):
@@ -196,7 +196,7 @@ def _camera_pose_from_projection(p2, intrinsics):
 
 
 def uncalibrated_sync_score(
-    pts1, pts2, conf1, conf2, bone_lengths, min_confidence=0.25, min_valid=8,
+    pts1, pts2, conf1, conf2, bone_lengths, min_confidence=0.25, min_valid=8, f_scale: float | str = 1.2,
 ):
     pts1, pts2 = np.asarray(pts1), np.asarray(pts2)
     c1, c2 = np.asarray(conf1), np.asarray(conf2)
@@ -207,7 +207,7 @@ def uncalibrated_sync_score(
     if np.any(valid.sum(axis=1) < min_valid):
         return np.inf
     try:
-        points_3d, p1, p2 = uncalibrated_triangulation(pts1, pts2, conf1, conf2, bone_lengths)
+        points_3d, p1, p2 = uncalibrated_triangulation(pts1, pts2, conf1, conf2, bone_lengths, f_scale=f_scale)
         flat_valid = valid.ravel()
         if pts1.shape[1] == 17:
             clear_pts1 = pts1[:, CLEAR_JOINTS, :].reshape(-1, 2)

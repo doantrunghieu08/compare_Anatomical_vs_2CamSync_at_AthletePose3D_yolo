@@ -80,15 +80,27 @@ def point_to_ray_distance_torch(
     return torch.linalg.vector_norm(perp, dim=-1)
 
 
-def dlt_single(p1: np.ndarray, p2: np.ndarray, point1: np.ndarray, point2: np.ndarray) -> np.ndarray:
+def _weighted_dlt_single(
+    p1: np.ndarray, p2: np.ndarray, point1: np.ndarray, point2: np.ndarray,
+    weight1: float = 1.0, weight2: float = 1.0,
+) -> np.ndarray:
     x1, y1 = point1
     x2, y2 = point2
     a = np.array(
-        [x1 * p1[2] - p1[0], y1 * p1[2] - p1[1], x2 * p2[2] - p2[0], y2 * p2[2] - p2[1]]
+        [
+            weight1 * (x1 * p1[2] - p1[0]),
+            weight1 * (y1 * p1[2] - p1[1]),
+            weight2 * (x2 * p2[2] - p2[0]),
+            weight2 * (y2 * p2[2] - p2[1]),
+        ]
     )
     _, _, vt = svd(a)
     homogeneous = vt[-1]
     return homogeneous[:3] / homogeneous[3]
+
+
+def dlt_single(p1: np.ndarray, p2: np.ndarray, point1: np.ndarray, point2: np.ndarray) -> np.ndarray:
+    return _weighted_dlt_single(p1, p2, point1, point2, 1.0, 1.0)
 
 
 def triangulate_dlt(p1, p2, points1, points2, *_confidences) -> np.ndarray:
@@ -98,25 +110,14 @@ def triangulate_dlt(p1, p2, points1, points2, *_confidences) -> np.ndarray:
 def triangulate_conf_algebraic(p1, p2, points1, points2, confidence1, confidence2) -> np.ndarray:
     points_3d = np.zeros((len(points1), 3))
     for i, (point1, point2) in enumerate(zip(points1, points2)):
-        x1, y1 = point1
-        x2, y2 = point2
-        weight1 = np.clip(confidence1[i], 0.01, 1.0) ** 2
-        weight2 = np.clip(confidence2[i], 0.01, 1.0) ** 2
-        a = np.array(
-            [
-                weight1 * (x1 * p1[2] - p1[0]),
-                weight1 * (y1 * p1[2] - p1[1]),
-                weight2 * (x2 * p2[2] - p2[0]),
-                weight2 * (y2 * p2[2] - p2[1]),
-            ]
-        )
-        _, _, vt = svd(a)
-        homogeneous = vt[-1]
-        points_3d[i] = homogeneous[:3] / homogeneous[3]
+        weight1 = float(np.clip(confidence1[i], 0.01, 1.0) ** 2)
+        weight2 = float(np.clip(confidence2[i], 0.01, 1.0) ** 2)
+        points_3d[i] = _weighted_dlt_single(p1, p2, point1, point2, weight1, weight2)
     return points_3d
 
 
-def triangulate_ransac(p1, p2, points1, points2, confidence1, confidence2, reprojection_threshold=15.0):
+def triangulate_reweighted_dlt(p1, p2, points1, points2, confidence1, confidence2, reprojection_threshold=15.0):
+    """Reweighted DLT based on reprojection error consistency (replaces pseudo-RANSAC)."""
     points_3d = np.zeros((len(points1), 3))
     for i, (point1, point2) in enumerate(zip(points1, points2)):
         point_3d = dlt_single(p1, p2, point1, point2)
@@ -127,23 +128,15 @@ def triangulate_ransac(p1, p2, points1, points2, confidence1, confidence2, repro
         elif error2 > reprojection_threshold >= error1:
             weight1, weight2 = 1.0, 0.1
         elif error1 > reprojection_threshold and error2 > reprojection_threshold:
-            weight1, weight2 = confidence1[i] ** 2, confidence2[i] ** 2
+            weight1, weight2 = float(confidence1[i] ** 2), float(confidence2[i] ** 2)
         else:
-            weight1, weight2 = confidence1[i], confidence2[i]
-        x1, y1 = point1
-        x2, y2 = point2
-        a = np.array(
-            [
-                weight1 * (x1 * p1[2] - p1[0]),
-                weight1 * (y1 * p1[2] - p1[1]),
-                weight2 * (x2 * p2[2] - p2[0]),
-                weight2 * (y2 * p2[2] - p2[1]),
-            ]
-        )
-        _, _, vt = svd(a)
-        homogeneous = vt[-1]
-        points_3d[i] = homogeneous[:3] / homogeneous[3]
+            weight1, weight2 = float(confidence1[i]), float(confidence2[i])
+        points_3d[i] = _weighted_dlt_single(p1, p2, point1, point2, weight1, weight2)
     return points_3d
+
+
+# Alias for backward compatibility
+triangulate_ransac = triangulate_reweighted_dlt
 
 
 def triangulate_iterative(p1, p2, points1, points2, confidence1, confidence2, iterations=50):
@@ -371,6 +364,7 @@ def triangulate_anatomical(
     bone_lengths=None,
     bone_weight=1.0,
     iterations=80,
+    lr=0.1,
     **_kwargs,
 ):
     init_3d = triangulate_dlt(p1, p2, points1, points2)
@@ -383,7 +377,7 @@ def triangulate_anatomical(
         for value in (confidence1, confidence2)
     )
     rays_pre = (_camera_rays(p1_t, pts1_t), _camera_rays(p2_t, pts2_t))
-    optimizer = torch.optim.Adam([points_3d], lr=0.1)
+    optimizer = torch.optim.Adam([points_3d], lr=float(lr))
     bone_lengths = bone_lengths or h36m_bone_lengths_from_height()
     valid_bones = [(a, b, l) for (a, b), l in bone_lengths.items() if l > 0]
     b_idx_a = torch.tensor([v[0] for v in valid_bones], dtype=torch.long, device=device)

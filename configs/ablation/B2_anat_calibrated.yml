@@ -1,4 +1,3 @@
-# Step 4: Anatomical + Calibrated Heights + Temporal Acceleration Refinement
 input:
   dataset_root: inputs
   pose2d_root: inputs
@@ -12,7 +11,7 @@ input:
   pose_cache_limit: 550
   minimum_manifest_confidence: 0.6
 output:
-  results_csv: outputs/ablation/04_sequence_refine.csv
+  results_csv: outputs/ablation/B2_anat_calibrated.csv
   overwrite: true
 pipeline:
   max_pairs: 15
@@ -170,7 +169,7 @@ pipeline:
   bone_prior_min_samples: 5
   bone_prior_min_confidence: 0.4
   sequence_refinement:
-    enabled: true
+    enabled: false
     data_weight: 0.34
     root_weight: 0.8
     bone_weight: 0.7
@@ -185,3 +184,4 @@ method:
   options:
     iterations: 80
     bone_weight: 1.0
+    lr: 0.1
