@@ -250,7 +250,7 @@ def estimate_pair_time_offset(
             return np.inf
         return uncalibrated_sync_score(
             np.asarray(points_a), np.asarray(points_b), np.asarray(confidence_a), np.asarray(confidence_b),
-            bone_lengths, min_confidence=min_confidence, min_valid=min_valid,
+            bone_lengths, min_confidence=min_confidence, min_valid=min_valid, f_scale=f_scale,
         )
 
     coarse_scores = {offset: score(offset) for offset in range(-max_offset, max_offset + 1, coarse_step)}
@@ -324,40 +324,57 @@ def _evaluate_pair(
 def _record_evaluated_pairs_csv(pair_info, evaluated_all, best, csv_path):
     path = Path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = path.exists() and path.stat().st_size > 0
+    headers = [
+        "Subject", "Motion", "Rank", "Cam_A", "Cam_B", "Is_Best",
+        "Pair_Score", "Sync_Delta", "Sync_Score", "Valid_Ratio",
+        "Validation_Score", "Validation_IQR", "Mean_Confidence",
+    ]
     sorted_pairs = sorted(evaluated_all, key=lambda c: c.get("score", float("inf")))
     best_ids = (best["cam_a"]["cam_id"], best["cam_b"]["cam_id"]) if best else (None, None)
-    with path.open("a", newline="", encoding="utf-8") as f:
+
+    subj = str(pair_info.get("subject", ""))
+    mot = str(pair_info.get("motion", ""))
+
+    existing_rows = []
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            file_headers = next(reader, None)
+            for row in reader:
+                if len(row) >= 2 and row[0] == subj and row[1] == mot:
+                    continue
+                existing_rows.append(row)
+
+    new_rows = []
+    for rank, c in enumerate(sorted_pairs, start=1):
+        cam_a_id = c["cam_a"].get("cam_id")
+        cam_b_id = c["cam_b"].get("cam_id")
+        is_best = (cam_a_id, cam_b_id) == best_ids
+        score_val = c.get("score", float("inf"))
+        sync_val = c.get("sync_score", float("inf"))
+        val_score = c.get("validation_score", float("inf"))
+        val_iqr = c.get("validation_iqr", float("inf"))
+        new_rows.append([
+            subj,
+            mot,
+            rank,
+            cam_a_id,
+            cam_b_id,
+            is_best,
+            f"{score_val:.3f}" if np.isfinite(score_val) else "inf",
+            c.get("delta") if c.get("delta") is not None else "",
+            f"{sync_val:.3f}" if np.isfinite(sync_val) else "inf",
+            f"{c.get('valid_ratio', 0.0):.3f}",
+            f"{val_score:.3f}" if np.isfinite(val_score) else "inf",
+            f"{val_iqr:.3f}" if np.isfinite(val_iqr) else "inf",
+            f"{c.get('mean_conf', 0.0):.3f}",
+        ])
+
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow([
-                "Subject", "Motion", "Rank", "Cam_A", "Cam_B", "Is_Best",
-                "Pair_Score", "Sync_Delta", "Sync_Score", "Valid_Ratio",
-                "Validation_Score", "Validation_IQR", "Mean_Confidence",
-            ])
-        for rank, c in enumerate(sorted_pairs, start=1):
-            cam_a_id = c["cam_a"].get("cam_id")
-            cam_b_id = c["cam_b"].get("cam_id")
-            is_best = (cam_a_id, cam_b_id) == best_ids
-            score_val = c.get("score", float("inf"))
-            sync_val = c.get("sync_score", float("inf"))
-            val_score = c.get("validation_score", float("inf"))
-            val_iqr = c.get("validation_iqr", float("inf"))
-            writer.writerow([
-                pair_info.get("subject"),
-                pair_info.get("motion"),
-                rank,
-                cam_a_id,
-                cam_b_id,
-                is_best,
-                f"{score_val:.3f}" if np.isfinite(score_val) else "inf",
-                c.get("delta") if c.get("delta") is not None else "",
-                f"{sync_val:.3f}" if np.isfinite(sync_val) else "inf",
-                f"{c.get('valid_ratio', 0.0):.3f}",
-                f"{val_score:.3f}" if np.isfinite(val_score) else "inf",
-                f"{val_iqr:.3f}" if np.isfinite(val_iqr) else "inf",
-                f"{c.get('mean_conf', 0.0):.3f}",
-            ])
+        writer.writerow(headers)
+        writer.writerows(existing_rows)
+        writer.writerows(new_rows)
 
 
 def select_best_pair(

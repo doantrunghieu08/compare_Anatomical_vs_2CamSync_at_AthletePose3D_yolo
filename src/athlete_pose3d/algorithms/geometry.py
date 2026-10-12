@@ -640,3 +640,26 @@ def evaluate_joint_groups(prediction: np.ndarray, ground_truth: np.ndarray) -> d
     }
 
 
+def align_sequence_to_world(preds: np.ndarray, gts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Align sequence of poses from Camera 1 coordinate system to World coordinate system.
+
+    Finds optimal single SO(3) rotation R for the entire sequence (pelvis-centered)
+    and maps: P_world = (P_cam1 - P_cam1_pelvis) @ R.T + GT_pelvis.
+    Returns:
+        preds_world: (T, 17, 3) aligned to World coordinate frame (root at GT pelvis)
+        r_rigid: (3, 3) rotation matrix mapping Camera 1 -> World
+    """
+    preds = np.asarray(preds, dtype=float)
+    gts = np.asarray(gts, dtype=float)
+    single = preds.ndim == 2
+    if single:
+        preds, gts = preds[None], gts[None]
+    p = (preds - preds[..., :1, :])[..., 1:, :].reshape(-1, 3)
+    g = (gts - gts[..., :1, :])[..., 1:, :].reshape(-1, 3)
+    r_rigid, _ = kabsch(p, g, with_scale=False)
+    p_rel = preds - preds[..., :1, :]
+    preds_world = (p_rel @ r_rigid.T) + gts[..., :1, :]
+    return (preds_world[0] if single else preds_world), r_rigid
+
+
+

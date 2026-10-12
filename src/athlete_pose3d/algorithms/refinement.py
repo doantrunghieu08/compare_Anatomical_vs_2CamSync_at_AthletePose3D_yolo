@@ -7,8 +7,8 @@ import torch
 
 from ..settings import REFINED_METHOD, TWOCAM_METHOD
 from .geometry import (
-    H36M_BONES, H36M_SYMMETRIC_BONES,
-    evaluate_joint_groups, mpjpe, raw_mpjpe, rigid_mpjpe, pa_mpjpe,
+    H36M_BONES, H36M_SYMMETRIC_BONES, H36M_EVAL_JOINTS,
+    align_sequence_to_world, evaluate_joint_groups, mpjpe, raw_mpjpe, rigid_mpjpe, pa_mpjpe,
     h36m_bone_lengths_from_height, resolve_subject_height,
 )
 
@@ -187,16 +187,21 @@ def refine_results(
             refined.extend(chunk_poses)
             applied_flags.extend([was_applied] * len(chunk_poses))
 
-        for (index, result), prediction, was_applied in zip(items, refined, applied_flags):
+        gts = np.stack([r["gt_3d"] for _, r in items])
+        preds_world, _ = align_sequence_to_world(np.stack(refined), gts)
+        for (index, result), prediction, was_applied, pw in zip(items, refined, applied_flags, preds_world):
             raw = raw_mpjpe(prediction, result["gt_3d"])
             rigid = rigid_mpjpe(prediction, result["gt_3d"])
             pa = pa_mpjpe(prediction, result["gt_3d"])
             groups = evaluate_joint_groups(prediction, result["gt_3d"])
+            seq_rot = float(np.mean(np.linalg.norm(pw[H36M_EVAL_JOINTS] - result["gt_3d"][H36M_EVAL_JOINTS], axis=-1)))
             metrics = {
                 "recon_3d": prediction,
+                "recon_3d_world": pw,
                 "mpjpe": rigid,
                 "rigid_mpjpe": rigid,
                 "raw_mpjpe": raw,
+                "seq_rot_mpjpe": seq_rot,
                 "pa_mpjpe": pa,
                 "pa_clear": groups["pa_clear"],
                 "pa_derived": groups["pa_derived"],

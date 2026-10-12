@@ -71,7 +71,8 @@ def summarize_results_csv(csv_path: Path, config_name: str, elapsed_sec: float) 
 
     for col in (
         "Baseline_DLT_Raw_MPJPE", "Baseline_DLT_Rigid_MPJPE", "Baseline_DLT_MPJPE", "Baseline_DLT_PA",
-        "Selected_Method_Raw_MPJPE", "Selected_Method_Rigid_MPJPE", "Selected_Method_MPJPE", "Selected_Method_PA"
+        "Selected_Method_Raw_MPJPE", "Selected_Method_Rigid_MPJPE", "Selected_Method_MPJPE", "Selected_Method_PA",
+        "Baseline_DLT_SeqRot_MPJPE", "Selected_Method_SeqRot_MPJPE",
     ):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -81,15 +82,18 @@ def summarize_results_csv(csv_path: Path, config_name: str, elapsed_sec: float) 
             df[col] = pd.to_numeric(df["Baseline_DLT_MPJPE"], errors="coerce")
 
     # Read sequence metrics if available
-    seq_csv = csv_path.parent / f"{csv_path.stem}_sequence_metrics.csv"
     seq_rot_mean = float("nan")
-    if seq_csv.exists():
-        try:
-            seq_df = pd.read_csv(seq_csv)
-            if "Method_SeqRot_MPJPE" in seq_df.columns:
-                seq_rot_mean = float(pd.to_numeric(seq_df["Method_SeqRot_MPJPE"], errors="coerce").mean())
-        except Exception:
-            pass
+    if "Selected_Method_SeqRot_MPJPE" in df.columns and not df["Selected_Method_SeqRot_MPJPE"].dropna().empty:
+        seq_rot_mean = float(df["Selected_Method_SeqRot_MPJPE"].dropna().mean())
+    else:
+        seq_csv = csv_path.parent / f"{csv_path.stem}_sequence_metrics.csv"
+        if seq_csv.exists():
+            try:
+                seq_df = pd.read_csv(seq_csv)
+                if "Method_SeqRot_MPJPE" in seq_df.columns:
+                    seq_rot_mean = float(pd.to_numeric(seq_df["Method_SeqRot_MPJPE"], errors="coerce").mean())
+            except Exception:
+                pass
 
     # Per-motion bootstrap delta vs baseline
     per_motion_d = []
@@ -129,6 +133,7 @@ def summarize_results_csv(csv_path: Path, config_name: str, elapsed_sec: float) 
         s_pa = sub_df["Selected_Method_PA"].mean()
         s_dlt_rigid = sub_df["Baseline_DLT_Rigid_MPJPE"].mean() if "Baseline_DLT_Rigid_MPJPE" in sub_df.columns else sub_df["Baseline_DLT_MPJPE"].mean()
         s_dlt_pa = sub_df["Baseline_DLT_PA"].mean()
+        s_seq = sub_df["Selected_Method_SeqRot_MPJPE"].dropna().mean() if "Selected_Method_SeqRot_MPJPE" in sub_df.columns and not sub_df["Selected_Method_SeqRot_MPJPE"].dropna().empty else float("nan")
 
         records.append({
             "Config": config_name,
@@ -136,7 +141,7 @@ def summarize_results_csv(csv_path: Path, config_name: str, elapsed_sec: float) 
             "Frames": len(sub_df),
             "Method_Raw": round(float(s_raw), 2) if np.isfinite(s_raw) else "N/A",
             "Method_Rigid": round(float(s_rigid), 2),
-            "Method_SeqRot": "-",
+            "Method_SeqRot": round(float(s_seq), 2) if np.isfinite(s_seq) else "-",
             "Method_PA": round(float(s_pa), 2),
             "DLT_Rigid": round(float(s_dlt_rigid), 2),
             "DLT_PA": round(float(s_dlt_pa), 2),

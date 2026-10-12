@@ -8,6 +8,8 @@ from tqdm.auto import tqdm
 
 from .algorithms.geometry import (
     H36M_SYMMETRIC_BONES,
+    H36M_EVAL_JOINTS,
+    align_sequence_to_world,
     estimate_bone_lengths_from_poses,
     h36m_bone_lengths_from_height,
     mpjpe,
@@ -379,6 +381,48 @@ def _build_frame_result(context, frame, inputs, method_results, selected_label, 
 
 
 
+def _apply_sequence_world_alignment(results):
+    valid_items = [
+        (i, r) for i, r in enumerate(results)
+        if r.get("recon_3d") is not None and r.get("gt_3d") is not None
+        and np.isfinite(r["recon_3d"]).all() and np.isfinite(r["gt_3d"]).all()
+    ]
+    if not valid_items:
+        return
+    indices, items = zip(*valid_items)
+    preds = np.stack([r["recon_3d"] for r in items])
+    gts = np.stack([r["gt_3d"] for r in items])
+    preds_world, _ = align_sequence_to_world(preds, gts)
+    for i, r, pw in zip(indices, items, preds_world):
+        r["recon_3d_world"] = pw
+        err = float(np.mean(np.linalg.norm(pw[H36M_EVAL_JOINTS] - r["gt_3d"][H36M_EVAL_JOINTS], axis=-1)))
+        r["seq_rot_mpjpe"] = err
+        method_name = r.get("best_method")
+        if method_name and method_name in r.get("all_methods", {}):
+            r["all_methods"][method_name]["recon_3d_world"] = pw
+            r["all_methods"][method_name]["seq_rot_mpjpe"] = err
+
+    dlt_items = [
+        (i, r, (r.get("all_methods", {}).get("DLT (baseline)") or {}).get("recon_3d"))
+        for i, r in enumerate(results)
+        if (r.get("all_methods", {}).get("DLT (baseline)") or {}).get("recon_3d") is not None
+        and r.get("gt_3d") is not None and np.isfinite(r["gt_3d"]).all()
+    ]
+    if dlt_items:
+        d_indices, d_res, d_preds = zip(*dlt_items)
+        if all(p is not None and np.isfinite(p).all() for p in d_preds):
+            dlt_stack = np.stack(d_preds)
+            d_gts = np.stack([r["gt_3d"] for r in d_res])
+            dlt_world, _ = align_sequence_to_world(dlt_stack, d_gts)
+            for r, dw in zip(d_res, dlt_world):
+                r["baseline_dlt_world"] = dw
+                d_err = float(np.mean(np.linalg.norm(dw[H36M_EVAL_JOINTS] - r["gt_3d"][H36M_EVAL_JOINTS], axis=-1)))
+                r["baseline_dlt_seq_rot_mpjpe"] = d_err
+                if "DLT (baseline)" in r.get("all_methods", {}):
+                    r["all_methods"]["DLT (baseline)"]["recon_3d_world"] = dw
+                    r["all_methods"]["DLT (baseline)"]["seq_rot_mpjpe"] = d_err
+
+
 def _process_motion(pair_info, repository, config, valid_videos, selected_label):
     score_options = _sync_score_options(config, pair_info["subject"])
     sync_p = _fps_scaled_sync_params(pair_info, config)
@@ -424,6 +468,8 @@ def _process_motion(pair_info, repository, config, valid_videos, selected_label)
             prev_recon_3d = method_results[selected_label]["recon_3d"]
         prev_frame = frame
         results.append(_build_frame_result(context, frame, inputs, method_results, selected_label, dlt_baseline))
+    if results:
+        _apply_sequence_world_alignment(results)
     return results
 
 

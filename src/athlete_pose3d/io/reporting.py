@@ -152,11 +152,13 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
     all_m = result.get("all_methods", {})
     dlt_m = all_m.get("DLT (baseline)") or all_m.get("DLT (raw baseline)") or {}
     b_raw = float(result.get("baseline_dlt_raw_mpjpe") if result.get("baseline_dlt_raw_mpjpe") is not None else dlt_m.get("raw_mpjpe", float("nan")))
+    b_seq_rot = float(result.get("baseline_dlt_seq_rot_mpjpe") if result.get("baseline_dlt_seq_rot_mpjpe") is not None else dlt_m.get("seq_rot_mpjpe", float("nan")))
     b_rigid = float(result.get("baseline_dlt_rigid_mpjpe") if result.get("baseline_dlt_rigid_mpjpe") is not None else dlt_m.get("rigid_mpjpe", float("nan")))
     b_mpjpe = float(result.get("baseline_dlt_mpjpe") if result.get("baseline_dlt_mpjpe") is not None else (b_rigid if not math.isnan(b_rigid) else dlt_m.get("mpjpe", float("nan"))))
     b_pa = float(result.get("baseline_dlt_pa") if result.get("baseline_dlt_pa") is not None else dlt_m.get("pa_mpjpe", float("nan")))
 
     s_raw = float(result.get("raw_mpjpe", float("nan")))
+    s_seq_rot = float(result.get("seq_rot_mpjpe", float("nan")))
     s_rigid = float(result.get("rigid_mpjpe", result.get("mpjpe", float("nan"))))
     s_mpjpe = float(result["mpjpe"])
     s_pa = float(result["pa_mpjpe"])
@@ -190,6 +192,8 @@ def _format_single_report_row(result, system: SystemInfo, version: str, notes: s
         round(s_mpjpe, 2) if not math.isnan(s_mpjpe) else "N/A",
         round(s_pa, 2) if not math.isnan(s_pa) else "N/A",
         d_mpjpe, d_pa,
+        round(b_seq_rot, 2) if not math.isnan(b_seq_rot) else "N/A",
+        round(s_seq_rot, 2) if not math.isnan(s_seq_rot) else "N/A",
         pa_c, pa_d,
         metrics["mean_conf"],
         metrics["mpjpe_unoccl"] if not math.isnan(metrics["mpjpe_unoccl"]) else "N/A",
@@ -216,32 +220,38 @@ def _build_summary_row(results, system: SystemInfo, version: str):
         return None
     n = len(results)
     b_raw_vals = [float(r["baseline_dlt_raw_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_raw_mpjpe", float("nan"))))]
+    b_seq_vals = [float(r["baseline_dlt_seq_rot_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_seq_rot_mpjpe", float("nan"))))]
     b_rigid_vals = [float(r["baseline_dlt_rigid_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_rigid_mpjpe", float("nan"))))]
     b_mpjpe_vals = [float(r["baseline_dlt_mpjpe"]) for r in results if not math.isnan(float(r.get("baseline_dlt_mpjpe", float("nan"))))]
     b_pa_vals = [float(r["baseline_dlt_pa"]) for r in results if not math.isnan(float(r.get("baseline_dlt_pa", float("nan"))))]
 
     b_raw_m = sum(b_raw_vals) / len(b_raw_vals) if b_raw_vals else float("nan")
+    b_seq_m = sum(b_seq_vals) / len(b_seq_vals) if b_seq_vals else float("nan")
     b_rigid_m = sum(b_rigid_vals) / len(b_rigid_vals) if b_rigid_vals else float("nan")
     b_m = sum(b_mpjpe_vals) / len(b_mpjpe_vals) if b_mpjpe_vals else float("nan")
     b_p = sum(b_pa_vals) / len(b_pa_vals) if b_pa_vals else float("nan")
 
     s_raw_vals = [float(r["raw_mpjpe"]) for r in results if not math.isnan(float(r.get("raw_mpjpe", float("nan"))))]
+    s_seq_vals = [float(r["seq_rot_mpjpe"]) for r in results if not math.isnan(float(r.get("seq_rot_mpjpe", float("nan"))))]
     s_rigid_vals = [float(r["rigid_mpjpe"]) for r in results if not math.isnan(float(r.get("rigid_mpjpe", float("nan"))))]
     s_mpjpe_vals = [float(r["mpjpe"]) for r in results if not math.isnan(float(r.get("mpjpe", float("nan"))))]
     s_pa_vals = [float(r["pa_mpjpe"]) for r in results if not math.isnan(float(r.get("pa_mpjpe", float("nan"))))]
 
     s_raw_m = sum(s_raw_vals) / len(s_raw_vals) if s_raw_vals else float("nan")
+    s_seq_m = sum(s_seq_vals) / len(s_seq_vals) if s_seq_vals else float("nan")
     s_rigid_m = sum(s_rigid_vals) / len(s_rigid_vals) if s_rigid_vals else float("nan")
     s_m = sum(s_mpjpe_vals) / len(s_mpjpe_vals) if s_mpjpe_vals else float("nan")
     s_p = sum(s_pa_vals) / len(s_pa_vals) if s_pa_vals else float("nan")
 
     n_dlt = len(b_pa_vals)
     b_raw_str = round(b_raw_m, 2) if not math.isnan(b_raw_m) else "N/A"
+    b_seq_str = round(b_seq_m, 2) if not math.isnan(b_seq_m) else "N/A"
     b_rigid_str = round(b_rigid_m, 2) if not math.isnan(b_rigid_m) else "N/A"
     b_m_str = round(b_m, 2) if not math.isnan(b_m) else "N/A"
     b_p_str = round(b_p, 2) if not math.isnan(b_p) else "N/A"
 
     s_raw_str = round(s_raw_m, 2) if not math.isnan(s_raw_m) else "N/A"
+    s_seq_str = round(s_seq_m, 2) if not math.isnan(s_seq_m) else "N/A"
     s_rigid_str = round(s_rigid_m, 2) if not math.isnan(s_rigid_m) else "N/A"
 
     d_m_str = (
@@ -275,6 +285,7 @@ def _build_summary_row(results, system: SystemInfo, version: str):
         b_raw_str, b_rigid_str, b_m_str, b_p_str,
         s_raw_str, s_rigid_str, round(s_m, 2), round(s_p, 2),
         d_m_str, d_p_str,
+        b_seq_str, s_seq_str,
         pa_c_mean, pa_d_mean,
         conf_mean, unoccl_mean, occl_mean, num_occl_mean,
         "-", "-", "-",
@@ -385,6 +396,36 @@ def _build_per_joint_analysis(results: list[dict]) -> pd.DataFrame:
             "Delta_vs_DLT_pct": delta_pct if not math.isnan(delta_pct) else "N/A",
         })
 
+    # Summary row 1: H36M Standard (Joints 1..16, excluding Pelvis)
+    eval_d = [float(r["DLT_MPJPE_mm"]) for r in rows if r["Joint_ID"] in H36M_EVAL_JOINTS and r["DLT_MPJPE_mm"] != "N/A"]
+    eval_m = [float(r["Method_MPJPE_mm"]) for r in rows if r["Joint_ID"] in H36M_EVAL_JOINTS and r["Method_MPJPE_mm"] != "N/A"]
+    eval_mpa = [float(r["Method_PA_MPJPE_mm"]) for r in rows if r["Joint_ID"] in H36M_EVAL_JOINTS and r["Method_PA_MPJPE_mm"] != "N/A"]
+    d_eval_m = round(float(np.mean(eval_d)), 2) if eval_d else "N/A"
+    m_eval_m = round(float(np.mean(eval_m)), 2) if eval_m else "N/A"
+    mpa_eval_m = round(float(np.mean(eval_mpa)), 2) if eval_mpa else "N/A"
+    delta_eval = round((d_eval_m - m_eval_m) / d_eval_m * 100.0, 2) if d_eval_m != "N/A" and m_eval_m != "N/A" and d_eval_m > 0 else "N/A"
+    rows.append({
+        "Joint_ID": "Mean_16_Eval", "Joint_Name": "H36M Standard (no Pelvis)", "Group": "Summary",
+        "Conf_CamA": "", "Conf_CamB": "", "Conf_Stereo": "", "Occlusion_Rate_pct": "",
+        "DLT_MPJPE_mm": d_eval_m, "Method_MPJPE_mm": m_eval_m, "Method_PA_MPJPE_mm": mpa_eval_m,
+        "MPJPE_Unoccluded_mm": "", "MPJPE_Occluded_mm": "", "Delta_vs_DLT_pct": delta_eval,
+    })
+
+    # Summary row 2: All 17 Joints (Joints 0..16, including Pelvis)
+    all_d = [float(r["DLT_MPJPE_mm"]) for r in rows[:n_joints] if r["DLT_MPJPE_mm"] != "N/A"]
+    all_m = [float(r["Method_MPJPE_mm"]) for r in rows[:n_joints] if r["Method_MPJPE_mm"] != "N/A"]
+    all_mpa = [float(r["Method_PA_MPJPE_mm"]) for r in rows[:n_joints] if r["Method_PA_MPJPE_mm"] != "N/A"]
+    d_all_m = round(float(np.mean(all_d)), 2) if all_d else "N/A"
+    m_all_m = round(float(np.mean(all_m)), 2) if all_m else "N/A"
+    mpa_all_m = round(float(np.mean(all_mpa)), 2) if all_mpa else "N/A"
+    delta_all = round((d_all_m - m_all_m) / d_all_m * 100.0, 2) if d_all_m != "N/A" and m_all_m != "N/A" and d_all_m > 0 else "N/A"
+    rows.append({
+        "Joint_ID": "Mean_17_All", "Joint_Name": "All Joints (with Pelvis)", "Group": "Summary",
+        "Conf_CamA": "", "Conf_CamB": "", "Conf_Stereo": "", "Occlusion_Rate_pct": "",
+        "DLT_MPJPE_mm": d_all_m, "Method_MPJPE_mm": m_all_m, "Method_PA_MPJPE_mm": mpa_all_m,
+        "MPJPE_Unoccluded_mm": "", "MPJPE_Occluded_mm": "", "Delta_vs_DLT_pct": delta_all,
+    })
+
     df = pd.DataFrame(rows)
     return df
 
@@ -490,10 +531,11 @@ class CsvResultReporter:
         print(f"Baseline DLT:    Raw: {_fmt(s[6])} mm | Rigid: {_fmt(s[7])} mm | PA: {_fmt(s[9])} mm")
         print(f"Selected Method: Raw: {_fmt(s[10])} mm | Rigid: {_fmt(s[11])} mm | PA: {_fmt(s[13])} mm")
         print(f"Delta (DLT-New): Rigid: {_fmt(s[14], sign=True)} % | PA: {_fmt(s[15], sign=True)} %")
-        if s[16] != "N/A" and s[17] != "N/A":
-            print(f"Joint Groups:    PA-Clear: {s[16]} mm | PA-Derived: {s[17]} mm")
-        print(f"Reliability:     Mean Conf: {s[18]} | Occluded Joints/Frame: {s[21]}")
-        print(f"Occlusion:       Unoccluded: {s[19]} mm | Occluded: {s[20]} mm")
+        print(f"SeqRot (World):  DLT: {_fmt(s[16])} mm | Selected: {_fmt(s[17])} mm")
+        if s[18] != "N/A" and s[19] != "N/A":
+            print(f"Joint Groups:    PA-Clear: {s[18]} mm | PA-Derived: {s[19]} mm")
+        print(f"Reliability:     Mean Conf: {s[20]} | Occluded Joints/Frame: {s[23]}")
+        print(f"Occlusion:       Unoccluded: {s[21]} mm | Occluded: {s[22]} mm")
         print("=" * 60)
 
         if df_per_joint is not None and not df_per_joint.empty:

@@ -114,6 +114,7 @@ REPORT_HEADERS = [
     "Baseline_DLT_Raw_MPJPE", "Baseline_DLT_Rigid_MPJPE", "Baseline_DLT_MPJPE", "Baseline_DLT_PA",
     "Selected_Method_Raw_MPJPE", "Selected_Method_Rigid_MPJPE", "Selected_Method_MPJPE",
     "Selected_Method_PA", "Delta_MPJPE_pct", "Delta_PA_pct",
+    "Baseline_DLT_SeqRot_MPJPE", "Selected_Method_SeqRot_MPJPE",
     "PA_Clear", "PA_Derived",
     "Mean_Confidence", "MPJPE_Unoccluded", "MPJPE_Occluded", "Num_Occluded_Joints",
     "Conf_A", "Conf_B", "Stereo_Conf",
